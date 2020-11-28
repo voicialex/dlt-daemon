@@ -1623,6 +1623,59 @@ TEST(t_dlt_file_open, nullpointer)
 
 
 
+/* Begin Method: dlt_common::dlt_file_quick_parsing */
+TEST(t_dlt_file_quick_parsing, normal)
+{
+    DltFile file;
+    /* Get PWD so file can be used*/
+    char pwd[100];
+    char openfile[114];
+    char output[128] = "/tmp/output_testfile.txt";
+
+    /* ignore returned value from getcwd */
+    if (getcwd(pwd, 100) == NULL) {}
+
+    sprintf(openfile, "%s/testfile.dlt", pwd);
+    /*---------------------------------------*/
+
+    /* Normal Use-Case, expected 0 */
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_init(&file, 0));
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_open(&file, openfile, 0));
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_quick_parsing(&file, output, DLT_OUTPUT_ASCII, 0));
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_free(&file, 0));
+    unlink(output);
+}
+
+TEST(t_dlt_file_quick_parsing, abnormal)
+{
+    DltFile file;
+    /* Get PWD so file can be used*/
+    char pwd[100];
+    char openfile[114];
+    char output[128] = "/tmp/output_testfile.txt";
+
+    /* ignore returned value from getcwd */
+    if (getcwd(pwd, 100) == NULL) {}
+
+    sprintf(openfile, "%s/testfile.dlt", pwd);
+    /*---------------------------------------*/
+
+    /* Abnormal Use-Case, expected DLT_RETURN_WRONG_PARAMETER (-5) */
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_init(&file, 0));
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_open(&file, openfile, 0));
+    EXPECT_GE(DLT_RETURN_WRONG_PARAMETER, dlt_file_quick_parsing(&file, NULL, DLT_OUTPUT_ASCII, 0));
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_free(&file, 0));
+
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_init(&file, 0));
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_open(&file, openfile, 0));
+    EXPECT_GE(DLT_RETURN_WRONG_PARAMETER, dlt_file_quick_parsing(NULL, output, DLT_OUTPUT_ASCII, 0));
+    EXPECT_LE(DLT_RETURN_OK, dlt_file_free(&file, 0));
+}
+/* End Method: dlt_common::dlt_file_quick_parsing */
+
+
+
+
 /* Begin Method: dlt_common::dlt_message_print_ascii*/
 TEST(t_dlt_message_print_ascii, normal)
 {
@@ -3129,7 +3182,8 @@ TEST(t_dlt_message_payload, abnormal)
 
     /* Get PWD so file and filter can be used*/
     char pwd[100];
-    getcwd(pwd, 100);
+    if (getcwd(pwd, 100) == NULL) {}
+
     char  openfile[114];
     sprintf(openfile, "%s/testfile.dlt", pwd);
     /*---------------------------------------*/
@@ -3566,13 +3620,15 @@ TEST(t_dlt_log_set_level, normal)
     /* DLT_LOG_TO_CONSOLE=0, */
     /* DLT_LOG_TO_SYSLOG=1, */
     /* DLT_LOG_TO_FILE=2, */
-    /* DLT_LOG_DROPPED=3 */
+    /* DLT_LOG_TO_STDERR=3, */
+    /* DLT_LOG_DROPPED=4 */
     /*####################### */
 
-    /* Normal Use-Case, expcect 0-3 */
+    /* Normal Use-Case, expect 0-4 */
     EXPECT_NO_THROW(dlt_log_set_level(DLT_LOG_TO_CONSOLE));
     EXPECT_NO_THROW(dlt_log_set_level(DLT_LOG_TO_SYSLOG));
     EXPECT_NO_THROW(dlt_log_set_level(DLT_LOG_TO_FILE));
+    EXPECT_NO_THROW(dlt_log_set_level(DLT_LOG_TO_STDERR));
     EXPECT_NO_THROW(dlt_log_set_level(DLT_LOG_DROPPED));
 }
 TEST(t_dlt_log_set_level, abnormal)
@@ -3619,7 +3675,8 @@ TEST(t_dlt_log_init, normal)
     /* DLT_LOG_TO_CONSOLE=0, */
     /* DLT_LOG_TO_SYSLOG=1, */
     /* DLT_LOG_TO_FILE=2, */
-    /* DLT_LOG_DROPPED=3 */
+    /* DLT_LOG_TO_STDERR=3, */
+    /* DLT_LOG_DROPPED=4 */
     /*####################### */
 
     /* Normal Use-Case, exptect 0-3 */
@@ -3628,6 +3685,7 @@ TEST(t_dlt_log_init, normal)
     EXPECT_NO_THROW(dlt_log_set_filename("/tmp/dlt.log"));
     EXPECT_NO_THROW(dlt_log_init(DLT_LOG_TO_FILE));
     EXPECT_NO_THROW(dlt_log_init(DLT_LOG_TO_FILE));
+    EXPECT_NO_THROW(dlt_log_init(DLT_LOG_TO_STDERR));
     EXPECT_NO_THROW(dlt_log_init(DLT_LOG_DROPPED));
 }
 TEST(t_dlt_log_init, abnormal)
@@ -3651,12 +3709,14 @@ TEST(t_dlt_log_free, normal)
     /* DLT_LOG_TO_CONSOLE=0, */
     /* DLT_LOG_TO_SYSLOG=1, */
     /* DLT_LOG_TO_FILE=2, */
-    /* DLT_LOG_DROPPED=3 */
+    /* DLT_LOG_TO_STDERR=3, */
+    /* DLT_LOG_DROPPED=4 */
     /*####################### */
 
     /* Normal Use-Case, expected 0 */
     EXPECT_NO_THROW(dlt_log_init(DLT_LOG_TO_CONSOLE));
     EXPECT_NO_THROW(dlt_log_init(DLT_LOG_TO_SYSLOG));
+    EXPECT_NO_THROW(dlt_log_init(DLT_LOG_TO_STDERR));
     EXPECT_NO_THROW(dlt_log_init(DLT_LOG_DROPPED));
 }
 TEST(t_dlt_log_free, abnormal)
@@ -4003,6 +4063,49 @@ TEST(t_dlt_print_char_string, nullpointer)
     EXPECT_GE(DLT_RETURN_ERROR, dlt_print_char_string(&ptr5, 0, NULL, 0));
 }
 /* End Method:dlt_common::dlt_print_char_string */
+
+
+
+
+/* Begin Method:dlt_common::dlt_strnlen_s*/
+TEST(t_dlt_strnlen_s, nullpointer)
+{
+    size_t len = dlt_strnlen_s(NULL, 0);
+    EXPECT_EQ(len, 0);
+}
+
+TEST(t_dlt_strnlen_s, len_zero)
+{
+    const char text[] = "The Quick Brown Fox";
+
+    size_t len = dlt_strnlen_s(text, 0);
+    EXPECT_EQ(len, 0);
+}
+
+TEST(t_dlt_strnlen_s, len_smaller)
+{
+    const char text[] = "The Quick Brown Fox";
+
+    size_t len = dlt_strnlen_s(text, 10);
+    EXPECT_EQ(len, 10);
+}
+
+TEST(t_dlt_strnlen_s, len_equal)
+{
+    const char text[] = "The Quick Brown Fox";
+
+    size_t len = dlt_strnlen_s(text, 19);
+    EXPECT_EQ(len, 19);
+}
+
+TEST(t_dlt_strnlen_s, len_larger)
+{
+    const char text[] = "The Quick Brown Fox";
+
+    size_t len = dlt_strnlen_s(text, 100);
+    EXPECT_EQ(len, 19);
+}
+/* End Method:dlt_common::dlt_strnlen_s*/
 
 
 

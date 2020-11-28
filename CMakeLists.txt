@@ -13,20 +13,15 @@
 # For further information see http://www.genivi.org/.
 #######
 
-cmake_minimum_required(VERSION 2.8.5)
-project(automotive-dlt)
+cmake_minimum_required(VERSION 3.3)
+project(automotive-dlt VERSION 2.18.5)
 
 mark_as_advanced(CMAKE_BACKWARDS_COMPATIBILITY)
 set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS TRUE)
 
 include(GNUInstallDirs)
 # Set version parameters
-set(DLT_MAJOR_VERSION 2)
-set(DLT_MINOR_VERSION 18)
-set(DLT_PATCH_LEVEL 4)
-set(DLT_VERSION ${DLT_MAJOR_VERSION}.${DLT_MINOR_VERSION}.${DLT_PATCH_LEVEL})
 set(DLT_VERSION_STATE STABLE)
-set(DLT_REVISION "")
 
 execute_process(COMMAND git describe --tags WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     OUTPUT_VARIABLE DLT_REVISION
@@ -68,6 +63,7 @@ option(WITH_DLT_SYSTEM        "Set to ON to build src/system binaries"          
 option(WITH_DLT_DBUS          "Set to ON to build src/dbus binaries"                                             OFF)
 option(WITH_DLT_TESTS         "Set to ON to build src/test binaries"                                             ON)
 option(WITH_DLT_UNIT_TESTS    "Set to ON to build gtest framework and tests/binaries"                            OFF)
+option(WITH_DLT_QNX_SYSTEM    "Set to ON to build QNX system binary dlt-qnx-system"                              OFF)
 
 set(DLT_IPC "FIFO" CACHE STRING "UNIX_SOCKET,FIFO")
 set(DLT_USER "genivi" CACHE STRING "Set user for process not run as root")
@@ -101,8 +97,8 @@ endif()
 
 include_directories(
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include/dlt
     ${PROJECT_BINARY_DIR}/include/dlt
+    ${PROJECT_SOURCE_DIR}/include/dlt
     ${PROJECT_SOURCE_DIR}/src/shared
     ${PROJECT_SOURCE_DIR}/src/core_dump_handler
     ${PROJECT_SOURCE_DIR}/src/offlinelogstorage
@@ -140,6 +136,9 @@ if(WITH_DLT_USE_IPv6)
     add_definitions(-DDLT_USE_IPv6)
 endif()
 
+if(WITH_DLT_QNX_SYSTEM AND NOT "${CMAKE_C_COMPILER}" MATCHES "nto-qnx|qcc")
+    message(FATAL_ERROR "Can only compile for QNX with a QNX compiler.")
+endif()
 
 if(WITH_GPROF)
     add_compile_options(-pg)
@@ -172,15 +171,19 @@ if(WITH_DLT_CXX11_EXT AND WITH_DLT_PKGCONFIG)
     install(FILES ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-c++.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig COMPONENT devel)
 endif()
 
-if(CMAKE_INSTALL_PREFIX STREQUAL "/usr")
-    set(CONFIGURATION_FILES_DIR "/etc")
-else()
-    set(CONFIGURATION_FILES_DIR "${CMAKE_INSTALL_PREFIX}/etc")
-endif()
-
+set(CONFIGURATION_FILES_DIR ${CMAKE_INSTALL_FULL_SYSCONFDIR})
 add_definitions(-DCONFIGURATION_FILES_DIR="${CONFIGURATION_FILES_DIR}")
 
 add_subdirectory(cmake)
+
+# Message queue
+if(HAVE_MQUEUE_H AND HAVE_FUNC_MQOPEN AND HAVE_FUNC_MQCLOSE AND
+   HAVE_FUNC_MQUNLINK AND HAVE_FUNC_MQSEND AND HAVE_FUNC_MQRECEIVE)
+    add_definitions(-DDLT_NETWORK_TRACE_ENABLE)
+    set(DLT_NETWORK_TRACE_ENABLE 1)
+else()
+    message(STATUS "Disable network trace interface since message queue is not supported")
+endif()
 
 if(WITH_SYSTEMD OR WITH_SYSTEMD_WATCHDOG OR WITH_SYSTEMD_JOURNAL)
     find_package(PkgConfig REQUIRED)
@@ -219,14 +222,15 @@ add_subdirectory(doc)
 add_subdirectory(src)
 add_subdirectory(include/dlt)
 add_subdirectory(testscripts)
-if(WITH_DLT_UNIT_TESTS)
+if (WITH_DLT_UNIT_TESTS)
     add_subdirectory( gtest-1.7.0 )
+    enable_testing()
     add_subdirectory(tests)
 endif()
 
 message(STATUS)
 message(STATUS "-------------------------------------------------------------------------------")
-message(STATUS "Build for Version ${DLT_VERSION} build ${DLT_REVISION} version state ${DLT_VERSION_STATE}")
+message(STATUS "Build for Version ${PROJECT_VERSION} build ${DLT_REVISION} version state ${DLT_VERSION_STATE}")
 message(STATUS "WITH_SYSTEMD = ${WITH_SYSTEMD}")
 message(STATUS "WITH_SYSTEMD_WATCHDOG = ${WITH_SYSTEMD_WATCHDOG}")
 message(STATUS "WITH_SYSTEMD_JOURNAL = ${WITH_SYSTEMD_JOURNAL}")
@@ -266,6 +270,7 @@ message(STATUS "CMAKE_SYSTEM_PROCESSOR = ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "WITH_DLT_LOGSTORAGE_CTRL_UDEV = ${WITH_DLT_LOGSTORAGE_CTRL_UDEV}")
 message(STATUS "DLT_IPC = ${DLT_IPC}(Path: ${DLT_USER_IPC_PATH})")
 message(STATUS "WITH_UDP_CONNECTION = ${WITH_UDP_CONNECTION}")
+message(STATUS "WITH_DLT_QNX_SYSTEM = ${WITH_DLT_QNX_SYSTEM})")
 message(STATUS "Change a value with: cmake -D<Variable>=<Value>")
 message(STATUS "-------------------------------------------------------------------------------")
 message(STATUS)

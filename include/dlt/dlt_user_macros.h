@@ -202,23 +202,23 @@
  * Send log message with variable list of messages (intended for verbose mode)
  * @param CONTEXT object containing information about one special logging context
  * @param LOGLEVEL the log level of the log message
- * @param ARGS variable list of arguments
+ * @param ... variable list of arguments
  * @note To avoid the MISRA warning "The comma operator has been used outside a for statement"
- *       use a semicolon instead of a comma to separate the ARGS.
+ *       use a semicolon instead of a comma to separate the __VA_ARGS__.
  *       Example: DLT_LOG(hContext, DLT_LOG_INFO, DLT_STRING("Hello world"); DLT_INT(123));
  */
 #ifdef _MSC_VER
 /* DLT_LOG is not supported by MS Visual C++ */
 /* use function interface instead            */
 #else
-#   define DLT_LOG(CONTEXT, LOGLEVEL, ARGS ...) \
+#   define DLT_LOG(CONTEXT, LOGLEVEL, ...) \
     do { \
         DltContextData log_local; \
         int dlt_local; \
         dlt_local = dlt_user_log_write_start(&CONTEXT, &log_local, LOGLEVEL); \
         if (dlt_local == DLT_RETURN_TRUE) \
         { \
-            ARGS; \
+            __VA_ARGS__; \
             (void)dlt_user_log_write_finish(&log_local); \
         } \
     } while (0)
@@ -229,23 +229,23 @@
  * @param CONTEXT object containing information about one special logging context
  * @param LOGLEVEL the log level of the log message
  * @param TS timestamp to be used for log message
- * @param ARGS variable list of arguments
+ * @param ... variable list of arguments
  * @note To avoid the MISRA warning "The comma operator has been used outside a for statement"
- *       use a semicolon instead of a comma to separate the ARGS.
+ *       use a semicolon instead of a comma to separate the __VA_ARGS__.
  *       Example: DLT_LOG_TS(hContext, DLT_LOG_INFO, timestamp, DLT_STRING("Hello world"); DLT_INT(123));
  */
 #ifdef _MSC_VER
 /* DLT_LOG_TS is not supported by MS Visual C++ */
 /* use function interface instead            */
 #else
-#   define DLT_LOG_TS(CONTEXT, LOGLEVEL, TS, ARGS ...) \
+#   define DLT_LOG_TS(CONTEXT, LOGLEVEL, TS, ...) \
     do { \
         DltContextData log_local; \
         int dlt_local; \
         dlt_local = dlt_user_log_write_start(&CONTEXT, &log_local, LOGLEVEL); \
         if (dlt_local == DLT_RETURN_TRUE) \
         { \
-            ARGS; \
+            __VA_ARGS__; \
             log_local.use_timestamp = DLT_USER_TIMESTAMP; \
             log_local.user_timestamp = (uint32_t) TS; \
             (void)dlt_user_log_write_finish(&log_local); \
@@ -258,25 +258,25 @@
  * @param CONTEXT object containing information about one special logging context
  * @param LOGLEVEL the log level of the log message
  * @param MSGID the message id of log message
- * @param ARGS variable list of arguments:
+ * @param ... variable list of arguments
  * calls to DLT_STRING(), DLT_BOOL(), DLT_FLOAT32(), DLT_FLOAT64(),
  * DLT_INT(), DLT_UINT(), DLT_RAW()
  * @note To avoid the MISRA warning "The comma operator has been used outside a for statement"
- *       use a semicolon instead of a comma to separate the ARGS.
+ *       use a semicolon instead of a comma to separate the __VA_ARGS__.
  *       Example: DLT_LOG_ID(hContext, DLT_LOG_INFO, 0x1234, DLT_STRING("Hello world"); DLT_INT(123));
  */
 #ifdef _MSC_VER
 /* DLT_LOG_ID is not supported by MS Visual C++ */
 /* use function interface instead               */
 #else
-#   define DLT_LOG_ID(CONTEXT, LOGLEVEL, MSGID, ARGS ...) \
+#   define DLT_LOG_ID(CONTEXT, LOGLEVEL, MSGID, ...) \
     do { \
         DltContextData log_local; \
         int dlt_local; \
         dlt_local = dlt_user_log_write_start_id(&CONTEXT, &log_local, LOGLEVEL, MSGID); \
         if (dlt_local == DLT_RETURN_TRUE) \
         { \
-            ARGS; \
+            __VA_ARGS__; \
             (void)dlt_user_log_write_finish(&log_local); \
         } \
     } while (0)
@@ -288,25 +288,25 @@
  * @param LOGLEVEL the log level of the log message
  * @param MSGID the message id of log message
  * @param TS timestamp to be used for log message
- * @param ARGS variable list of arguments:
+ * @param ... variable list of arguments
  * calls to DLT_STRING(), DLT_BOOL(), DLT_FLOAT32(), DLT_FLOAT64(),
  * DLT_INT(), DLT_UINT(), DLT_RAW()
  * @note To avoid the MISRA warning "The comma operator has been used outside a for statement"
- *       use a semicolon instead of a comma to separate the ARGS.
+ *       use a semicolon instead of a comma to separate the __VA_ARGS__.
  *       Example: DLT_LOG_ID_TS(hContext, DLT_LOG_INFO, 0x1234, timestamp, DLT_STRING("Hello world"); DLT_INT(123));
  */
 #ifdef _MSC_VER
 /* DLT_LOG_ID_TS is not supported by MS Visual C++ */
 /* use function interface instead               */
 #else
-#   define DLT_LOG_ID_TS(CONTEXT, LOGLEVEL, MSGID, TS, ARGS ...) \
+#   define DLT_LOG_ID_TS(CONTEXT, LOGLEVEL, MSGID, TS, ...) \
     do { \
         DltContextData log_local; \
         int dlt_local; \
         dlt_local = dlt_user_log_write_start_id(&CONTEXT, &log_local, LOGLEVEL, MSGID); \
         if (dlt_local == DLT_RETURN_TRUE) \
         { \
-            ARGS; \
+            __VA_ARGS__; \
             log_local.use_timestamp = DLT_USER_TIMESTAMP; \
             log_local.user_timestamp = (uint32_t) TS; \
             (void)dlt_user_log_write_finish(&log_local); \
@@ -322,6 +322,17 @@
     (void)dlt_user_log_write_string(&log_local, TEXT)
 
 /**
+ * Add string parameter with given length to the log messsage.
+ * The string in @a TEXT does not need to be null-terminated, but
+ * the copied string will be null-terminated at its destination
+ * in the message buffer.
+ * @param TEXT ASCII string
+ * @param LEN length in bytes to take from @a TEXT
+ */
+#define DLT_SIZED_STRING(TEXT, LEN) \
+    (void)dlt_user_log_write_sized_string(&log_local, TEXT, LEN)
+
+/**
  * Add constant string parameter to the log messsage.
  * @param TEXT Constant ASCII string
  */
@@ -329,11 +340,33 @@
     (void)dlt_user_log_write_constant_string(&log_local, TEXT)
 
 /**
+ * Add constant string parameter with given length to the log messsage.
+ * The string in @a TEXT does not need to be null-terminated, but
+ * the copied string will be null-terminated at its destination
+ * in the message buffer.
+ * @param TEXT Constant ASCII string
+ * @param LEN length in bytes to take from @a TEXT
+ */
+#define DLT_SIZED_CSTRING(TEXT, LEN) \
+    (void)dlt_user_log_write_sized_constant_string(&log_local, TEXT, LEN)
+
+/**
  * Add utf8-encoded string parameter to the log messsage.
  * @param TEXT UTF8-encoded string
  */
 #define DLT_UTF8(TEXT) \
     (void)dlt_user_log_write_utf8_string(&log_local, TEXT)
+
+/**
+ * Add utf8-encoded string parameter with given length to the log messsage.
+ * The string in @a TEXT does not need to be null-terminated, but
+ * the copied string will be null-terminated at its destination
+ * in the message buffer.
+ * @param TEXT UTF8-encoded string
+ * @param LEN length in bytes to take from @a TEXT
+ */
+#define DLT_SIZED_UTF8(TEXT, LEN) \
+    (void)dlt_user_log_write_sized_utf8_string(&log_local, TEXT, LEN)
 
 /**
  * Add boolean parameter to the log messsage.

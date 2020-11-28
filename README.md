@@ -155,6 +155,7 @@ make doc
 - [dlt.conf(5)](doc/dlt.conf.5.md)
 - [dlt-system(1)](doc/dlt-system.1.md)
 - [dlt-system.conf(5)](doc/dlt-system.conf.5.md)
+- [dlt_gateway.conf(5)](doc/dlt_gateway.conf.5.md)
 - [dlt-convert(1)](doc/dlt-convert.1.md)
 - [dlt-sortbytimestamp(1)](doc/dlt-sortbytimestamp.1.md)
 - [dlt-receive(1)](doc/dlt-receive.1.md)
@@ -163,6 +164,7 @@ make doc
 - [dlt-passive-node-ctrl(1)](doc/dlt-passive-node-ctrl.1.md)
 - [dlt-adaptor-stdin(1)](doc/dlt-adaptor-stdin.1.md)
 - [dlt-adaptor-udp(1)](doc/dlt-adaptor-udp.1.md)
+- [dlt-qnx-system(1)](doc/dlt-qnx-system.md)
 
 The man pages are generated with *pandoc*.
 

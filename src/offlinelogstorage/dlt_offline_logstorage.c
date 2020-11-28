@@ -45,12 +45,25 @@ DLT_STATIC void dlt_logstorage_filter_config_free(DltLogStorageFilterConfig *dat
     DltLogStorageFileList *n = NULL;
     DltLogStorageFileList *n1 = NULL;
 
-    free(data->apids);
-    data->apids = NULL;
-    free(data->ctids);
-    data->ctids = NULL;
-    free(data->file_name);
-    data->file_name = NULL;
+    if (data->apids) {
+        free(data->apids);
+        data->apids = NULL;
+    }
+
+    if (data->ctids) {
+        free(data->ctids);
+        data->ctids = NULL;
+    }
+
+    if (data->file_name) {
+        free(data->file_name);
+        data->file_name = NULL;
+    }
+
+    if (data->working_file_name) {
+        free(data->working_file_name);
+        data->working_file_name = NULL;
+    }
 
     if (data->ecuid != NULL) {
         free(data->ecuid);
@@ -70,8 +83,11 @@ DLT_STATIC void dlt_logstorage_filter_config_free(DltLogStorageFilterConfig *dat
     while (n) {
         n1 = n;
         n = n->next;
-        free(n1->name);
-        n1->name = NULL;
+        if (n1->name) {
+            free(n1->name);
+            n1->name = NULL;
+        }
+
         free(n1);
         n1 = NULL;
     }
@@ -130,14 +146,6 @@ DLT_STATIC int dlt_logstorage_list_add_config(DltLogStorageFilterConfig *data,
 {
     if (*(listdata) == NULL)
         return -1;
-
-    (*listdata)->apids = NULL;
-    (*listdata)->ctids = NULL;
-    (*listdata)->file_name = NULL;
-    (*listdata)->ecuid = NULL;
-    (*listdata)->records = NULL;
-    (*listdata)->log = NULL;
-    (*listdata)->cache = NULL;
 
     /* copy the data to list */
     memcpy(*listdata, data, sizeof(DltLogStorageFilterConfig));
@@ -605,8 +613,9 @@ DLT_STATIC void dlt_logstorage_create_keys_only_ecu(char *ecuid, char *key)
  * - a comma separated list of ids
  * - a wildcard: .*
  *
- * Not allowed is the combination of application id and context id set to
- * wildcard. This will be rejected.
+ * If both application and context id are set to wildcard, this will be treated
+ * in the same way of the case application and context id are not present:
+ * - EcuID must be specified
  *
  * If lists given for application and/or context id, all possible combinations
  * are returned as keys in a form "[apid][ctid], e.g. "APP1\:CTX1".
@@ -637,7 +646,9 @@ DLT_STATIC int dlt_logstorage_create_keys(char *apids,
     int num_currkey = 0;
 
     /* Handle ecuid alone case here */
-    if ((apids == NULL) && (ctids == NULL) && (ecuid != NULL)) {
+    if (((apids == NULL) && (ctids == NULL) && (ecuid != NULL)) ||
+        ((apids != NULL) && (strncmp(apids, ".*", 2) == 0) &&
+         (ctids != NULL) && (strncmp(ctids, ".*", 2) == 0) && (ecuid != NULL)) ) {
         dlt_logstorage_create_keys_only_ecu(ecuid, curr_key);
         *(num_keys) = 1;
         *(keys) = (char *)calloc(*num_keys * DLT_OFFLINE_LOGSTORAGE_MAX_KEY_LEN,
@@ -721,7 +732,11 @@ DLT_STATIC int dlt_logstorage_prepare_table(DltLogStorage *handle,
 {
     int ret = 0;
     int num_keys = 0;
+    int found = 0;
     char *keys = NULL;
+    DltNewestFileName *tmp = NULL;
+    DltNewestFileName *prev_tmp = NULL;
+    DltNewestFileName *new_tmp = NULL;
 
     if ((handle == NULL) || (data == NULL)) {
         dlt_vlog(LOG_ERR, "Invalid parameters in %s\n", __func__);
@@ -750,6 +765,43 @@ DLT_STATIC int dlt_logstorage_prepare_table(DltLogStorage *handle,
         free(keys);
         keys = NULL;
         return -1;
+    }
+
+    if (data->file_name) {
+        if (handle->newest_file_list != NULL) {
+            tmp = handle->newest_file_list;
+            while (tmp) {
+                if (strcmp(tmp->file_name, data->file_name) == 0) {
+                    found = 1;
+                    break;
+                }
+                else {
+                    prev_tmp = tmp;
+                    tmp = tmp->next;
+                }
+            }
+        }
+
+        if (!found) {
+            new_tmp = calloc(1, sizeof(DltNewestFileName));
+            if (new_tmp == NULL) {
+                /* In this case, the existing list does not need to be freed.*/
+                dlt_vlog(LOG_ERR,
+                        "Failed to allocate memory for new file name [%s]\n",
+                        data->file_name);
+                free(keys);
+                keys = NULL;
+                return -1;
+            }
+            new_tmp->file_name = strdup(data->file_name);
+            new_tmp->newest_file = NULL;
+            new_tmp->next = NULL;
+
+            if (handle->newest_file_list == NULL)
+                handle->newest_file_list = new_tmp;
+            else
+                prev_tmp->next = new_tmp;
+        }
     }
 
     free(keys);
@@ -1275,6 +1327,41 @@ DLT_STATIC int dlt_logstorage_check_param(DltLogStorageFilterConfig *config,
     return -1;
 }
 
+DLT_STATIC int dlt_logstorage_get_filter_section_value(DltConfigFile *config_file,
+                                                       char *sec_name,
+                                                       DltLogstorageFilterConf entry,
+                                                       char *value)
+{
+    int ret = 0;
+
+    if ((config_file == NULL) || (sec_name == NULL))
+        return DLT_OFFLINE_LOGSTORAGE_FILTER_ERROR;
+
+    if (entry.key != NULL) {
+        ret = dlt_config_file_get_value(config_file, sec_name,
+                                        entry.key,
+                                        value);
+
+        if ((ret != 0) && (entry.is_opt == 0)) {
+            dlt_vlog(LOG_WARNING,
+                     "Invalid configuration in section: %s -> %s : %s\n",
+                     sec_name, entry.key, value);
+            return DLT_OFFLINE_LOGSTORAGE_FILTER_ERROR;
+        }
+
+        if ((ret != 0) && (entry.is_opt == 1)) {
+            dlt_vlog(LOG_DEBUG, "Optional parameter %s not specified\n",
+                     entry.key);
+            return DLT_OFFLINE_LOGSTORAGE_FILTER_CONTINUE;
+        }
+    }
+    else {
+        return DLT_OFFLINE_LOGSTORAGE_FILTER_CONTINUE;
+    }
+
+    return 0;
+}
+
 DLT_STATIC int dlt_logstorage_get_filter_value(DltConfigFile *config_file,
                                                char *sec_name,
                                                int index,
@@ -1292,70 +1379,30 @@ DLT_STATIC int dlt_logstorage_get_filter_value(DltConfigFile *config_file,
     if (strncmp(sec_name,
                 DLT_OFFLINE_LOGSTORAGE_CONFIG_SECTION,
                 config_sec_len) == 0) {
-        if (filter_cfg_entries[index].key != NULL) {
-            ret = dlt_config_file_get_value(config_file, sec_name,
-                                            filter_cfg_entries[index].key,
-                                            value);
-
-            if ((ret != 0) && (filter_cfg_entries[index].is_opt == 0)) {
-                dlt_vlog(LOG_WARNING,
-                         "Invalid configuration in section: %s -> %s : %s\n",
-                         sec_name, filter_cfg_entries[index].key, value);
-                return DLT_OFFLINE_LOGSTORAGE_FILTER_ERROR;
-            }
-
-            if ((ret != 0) && (filter_cfg_entries[index].is_opt == 1)) {
-                dlt_vlog(LOG_DEBUG, "Optional parameter %s not specified\n",
-                         filter_cfg_entries[index].key);
-                return DLT_OFFLINE_LOGSTORAGE_FILTER_CONTINUE;
-            }
-        }
-        else {
-            return DLT_OFFLINE_LOGSTORAGE_FILTER_CONTINUE;
-        }
+        ret = dlt_logstorage_get_filter_section_value(config_file, sec_name,
+                                                      filter_cfg_entries[index],
+                                                      value);
     }
     else if (strncmp(sec_name,
                      DLT_OFFLINE_LOGSTORAGE_NONVERBOSE_STORAGE_SECTION,
-                     storage_sec_len) == 0)
-    {
-        if (filter_nonverbose_storage_entries[index].key != NULL) {
-            if (dlt_config_file_get_value(config_file, sec_name,
-                                          filter_nonverbose_storage_entries[index].key, value) != 0) {
-                dlt_vlog(LOG_WARNING,
-                         "Invalid configuration in section: %s -> %s : %s\n",
-                         sec_name, filter_nonverbose_storage_entries[index].key,
-                         value);
-                return DLT_OFFLINE_LOGSTORAGE_FILTER_ERROR;
-            }
-        }
-        else {
-            return DLT_OFFLINE_LOGSTORAGE_FILTER_CONTINUE;
-        }
+                     storage_sec_len) == 0) {
+        ret = dlt_logstorage_get_filter_section_value(config_file, sec_name,
+                                                      filter_nonverbose_storage_entries[index],
+                                                      value);
     }
     else if ((strncmp(sec_name,
                       DLT_OFFLINE_LOGSTORAGE_NONVERBOSE_CONTROL_SECTION,
-                      control_sec_len) == 0))
-    {
-        if (filter_nonverbose_control_entries[index].key != NULL) {
-            if (dlt_config_file_get_value(config_file, sec_name,
-                                          filter_nonverbose_control_entries[index].key, value) != 0) {
-                dlt_vlog(LOG_WARNING,
-                         "Invalid configuration in section: %s -> %s : %s\n",
-                         sec_name, filter_nonverbose_control_entries[index].key,
-                         value);
-                return DLT_OFFLINE_LOGSTORAGE_FILTER_ERROR;
-            }
-        }
-        else {
-            return DLT_OFFLINE_LOGSTORAGE_FILTER_CONTINUE;
-        }
+                      control_sec_len) == 0)) {
+        ret = dlt_logstorage_get_filter_section_value(config_file, sec_name,
+                                                      filter_nonverbose_control_entries[index],
+                                                      value);
     }
     else {
         dlt_log(LOG_ERR, "Error: Section name not valid \n");
-        return DLT_OFFLINE_LOGSTORAGE_FILTER_ERROR;
+        ret = DLT_OFFLINE_LOGSTORAGE_FILTER_ERROR;
     }
 
-    return 0;
+    return ret;
 }
 
 DLT_STATIC int dlt_logstorage_setup_table(DltLogStorage *handle,
@@ -1394,15 +1441,8 @@ DLT_STATIC int dlt_daemon_offline_setup_filter_properties(DltLogStorage *handle,
         return DLT_OFFLINE_LOGSTORAGE_STORE_FILTER_ERROR;
 
     memset(&tmp_data, 0, sizeof(DltLogStorageFilterConfig));
-    tmp_data.apids = NULL;
-    tmp_data.ctids = NULL;
-    tmp_data.file_name = NULL;
-    tmp_data.ecuid = NULL;
     tmp_data.log_level = DLT_LOG_VERBOSE;
     tmp_data.reset_log_level = DLT_LOG_OFF;
-    tmp_data.records = NULL;
-    tmp_data.log = NULL;
-    tmp_data.cache = NULL;
 
     for (i = 0; i < DLT_LOGSTORAGE_FILTER_CONF_COUNT; i++) {
         ret = dlt_logstorage_get_filter_value(config_file, sec_name, i, value);
@@ -1430,6 +1470,11 @@ DLT_STATIC int dlt_daemon_offline_setup_filter_properties(DltLogStorage *handle,
             if (tmp_data.file_name != NULL) {
                 free(tmp_data.file_name);
                 tmp_data.file_name = NULL;
+            }
+
+            if (tmp_data.working_file_name != NULL) {
+                free(tmp_data.working_file_name);
+                tmp_data.working_file_name = NULL;
             }
 
             if (tmp_data.ecuid != NULL) {
@@ -1547,7 +1592,7 @@ DLT_STATIC int dlt_logstorage_store_filters(DltLogStorage *handle,
  * key consists of none wildcard value, e.g. apid=.*, cxid=CTX1
  * results in "CTX1".
  *
- * Combination of two wildcards is not allowed.
+ * Combination of two wildcards is not allowed if ECUID is not specified.
  *
  * @param handle        DLT Logstorage handle
  * @return              0 on success, -1 on error, 1 on warning
@@ -1629,6 +1674,7 @@ int dlt_logstorage_device_connected(DltLogStorage *handle, char *mount_point)
     handle->config_status = 0;
     handle->write_errors = 0;
     handle->num_configs = 0;
+    handle->newest_file_list = NULL;
 
     /* Setup logstorage with config file settings */
     return dlt_logstorage_load_config(handle);
@@ -1646,6 +1692,7 @@ int dlt_logstorage_device_connected(DltLogStorage *handle, char *mount_point)
  */
 int dlt_logstorage_device_disconnected(DltLogStorage *handle, int reason)
 {
+    DltNewestFileName *tmp = NULL;
     if (handle == NULL)
         return -1;
 
@@ -1659,6 +1706,21 @@ int dlt_logstorage_device_disconnected(DltLogStorage *handle, int reason)
     handle->config_status = 0;
     handle->write_errors = 0;
     handle->num_configs = 0;
+
+    while (handle->newest_file_list) {
+        tmp = handle->newest_file_list;
+        handle->newest_file_list = tmp->next;
+        if (tmp->file_name) {
+            free(tmp->file_name);
+            tmp->file_name = NULL;
+        }
+        if (tmp->newest_file) {
+            free(tmp->newest_file);
+            tmp->newest_file = NULL;
+        }
+        free(tmp);
+        tmp = NULL;
+    }
 
     return 0;
 }
@@ -1917,7 +1979,7 @@ DLT_STATIC int dlt_logstorage_filter(DltLogStorage *handle,
  * configuration.
  *
  * @param handle    DltLogStorage handle
- * @param uconfig    User configurations for log file
+ * @param uconfig   User configurations for log file
  * @param data1     Data buffer of message header
  * @param size1     Size of message header buffer
  * @param data2     Data buffer of extended message body
@@ -1948,6 +2010,8 @@ int dlt_logstorage_write(DltLogStorage *handle,
     DltStandardHeader *standardHeader = NULL;
     unsigned int standardHeaderExtraLen = sizeof(DltStandardHeaderExtra);
     unsigned int header_len = 0;
+    DltNewestFileName *tmp = NULL;
+    int found = 0;
 
     int log_level = -1;
 
@@ -2029,11 +2093,53 @@ int dlt_logstorage_write(DltLogStorage *handle,
         if (config[i]->file_name == NULL)
             continue;
 
+        tmp = handle->newest_file_list;
+        while (tmp) {
+            if (strcmp(tmp->file_name, config[i]->file_name) == 0) {
+                found = 1;
+                break;
+            }
+            else {
+                tmp = tmp->next;
+            }
+        }
+        if (!found) {
+            dlt_vlog(LOG_ERR, "Cannot find out record for filename [%s]\n",
+                    config[i]->file_name);
+            return -1;
+        }
+
         /* prepare log file (create and/or open)*/
         ret = config[i]->dlt_logstorage_prepare(config[i],
                                                 uconfig,
                                                 handle->device_mount_point,
-                                                size1 + size2 + size3);
+                                                size1 + size2 + size3,
+                                                tmp->newest_file);
+
+        /* In case the strategy is other than ON_MSG and UNSET,
+         * in the very first time of preparation, the working file name
+         * is not created yet. So check strategy and update it later in
+         * step prepare_on_msg.
+         */
+        if (!config[i]->working_file_name) {
+            if (config[i]->sync == DLT_LOGSTORAGE_SYNC_UNSET ||
+                    config[i]->sync == DLT_LOGSTORAGE_SYNC_ON_MSG) {
+                dlt_vlog(LOG_ERR, "Failed to prepare working file for %s\n",
+                        config[i]->file_name);
+                return -1;
+            }
+        }
+        else {
+            if ((tmp->newest_file == NULL ||
+                    strcmp(config[i]->working_file_name, tmp->newest_file) != 0)) {
+
+                if (tmp->newest_file) {
+                    free(tmp->newest_file);
+                    tmp->newest_file = NULL;
+                }
+                tmp->newest_file = strdup(config[i]->working_file_name);
+            }
+        }
 
         if (ret == 0) { /* log data (write) */
             ret = config[i]->dlt_logstorage_write(config[i],

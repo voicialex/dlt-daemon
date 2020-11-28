@@ -45,7 +45,8 @@ else()
 endif()
 
 target_link_libraries(dlt ${RT_LIBRARY} ${SOCKET_LIBRARY} ${CMAKE_THREAD_LIBS_INIT})
-set_target_properties(dlt PROPERTIES VERSION ${DLT_VERSION} SOVERSION ${DLT_MAJOR_VERSION})
+target_include_directories(dlt PUBLIC ${PROJECT_SOURCE_DIR}/include/dlt ${PROJECT_BINARY_DIR}/include/dlt)
+set_target_properties(dlt PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 
 install(TARGETS dlt
     RUNTIME

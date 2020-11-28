@@ -26,12 +26,10 @@ extern "C"
 #include <netinet/in.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 }
 
-#ifndef DLT_DAEMON_BLOCKING_TEST
-#   define DLT_DAEMON_BLOCKING_TEST 1
-#endif
-
+unsigned int g_logstorage_cache_max;
 /* Begin Method: dlt_logstorage::t_dlt_logstorage_list_add*/
 TEST(t_dlt_logstorage_list_add, normal)
 {
@@ -452,8 +450,8 @@ TEST(t_dlt_logstorage_store_filters, normal)
     handle.connection_type = DLT_OFFLINE_LOGSTORAGE_DEVICE_CONNECTED;
     handle.config_status = 0;
     handle.write_errors = 0;
-
     handle.config_list = NULL;
+    handle.newest_file_list = NULL;
 
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_store_filters(&handle, config_file_name));
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_list_destroy(&handle.config_list, &file_config, path, 0));
@@ -474,6 +472,7 @@ TEST(t_dlt_logstorage_load_config, normal)
     handle.config_status = 0;
     handle.write_errors = 0;
     handle.config_list = NULL;
+    handle.newest_file_list = NULL;
     strncpy(handle.device_mount_point, "/tmp", DLT_MOUNT_PATH_MAX);
 
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_load_config(&handle));
@@ -493,6 +492,7 @@ TEST(t_dlt_logstorage_device_connected, normal)
     handle.config_status = 0;
     handle.write_errors = 0;
     handle.config_list = NULL;
+    handle.newest_file_list = NULL;
     strncpy(handle.device_mount_point, "/tmp", DLT_MOUNT_PATH_MAX);
 
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_device_connected(&handle, handle.device_mount_point));
@@ -509,6 +509,7 @@ TEST(t_dlt_logstorage_device_disconnected, normal)
     DltLogStorage handle;
     int reason = 0;
     handle.config_status = 0;
+    handle.newest_file_list = NULL;
 
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_device_disconnected(&handle, reason));
 }
@@ -528,6 +529,7 @@ TEST(t_dlt_logstorage_get_loglevel_by_key, normal)
     handle.connection_type = DLT_OFFLINE_LOGSTORAGE_DEVICE_CONNECTED;
     handle.config_status = DLT_OFFLINE_LOGSTORAGE_CONFIG_DONE;
     handle.config_list = NULL;
+    handle.newest_file_list = NULL;
     int num_keys = 1;
 
     config = (DltLogStorageFilterConfig *)calloc(1, sizeof(DltLogStorageFilterConfig));
@@ -610,6 +612,7 @@ TEST(t_dlt_logstorage_filter, normal)
     handle.connection_type = DLT_OFFLINE_LOGSTORAGE_DEVICE_CONNECTED;
     handle.config_status = DLT_OFFLINE_LOGSTORAGE_CONFIG_DONE;
     handle.config_list = NULL;
+    handle.newest_file_list = NULL;
     int num_keys = 1;
 
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_list_add(key0, num_keys, &value, &(handle.config_list)));
@@ -646,6 +649,7 @@ TEST(t_dlt_logstorage_write, normal)
     handle.connection_type = DLT_OFFLINE_LOGSTORAGE_DEVICE_CONNECTED;
     handle.config_status = DLT_OFFLINE_LOGSTORAGE_CONFIG_DONE;
     handle.config_list = NULL;
+    handle.newest_file_list = NULL;
     DltLogStorageFilterConfig value;
     value.apids = apid;
     value.ctids = ctid;
@@ -875,12 +879,13 @@ TEST(t_dlt_logstorage_open_log_file, normal)
     config.ctids = &ctids;
     config.file_name = (char *)"Test";
     config.records = NULL;
+    config.working_file_name = NULL;
 
-    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_open_log_file(&config, &file_config, path, 1));
+    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_open_log_file(&config, &file_config, path, 1, true));
 }
 TEST(t_dlt_logstorage_open_log_file, null)
 {
-    EXPECT_EQ(DLT_RETURN_ERROR, dlt_logstorage_open_log_file(NULL, NULL, NULL, 0));
+    EXPECT_EQ(DLT_RETURN_ERROR, dlt_logstorage_open_log_file(NULL, NULL, NULL, 0, true));
 }
 
 /* Begin Method: dlt_logstorage::t_dlt_logstorage_prepare_on_msg*/
@@ -900,13 +905,14 @@ TEST(t_dlt_logstorage_prepare_on_msg, normal)
     config.file_name = (char *)"Test";
     config.records = NULL;
     config.log = NULL;
+    config.working_file_name = NULL;
 
-    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_on_msg(&config, &file_config, path, 1));
+    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_on_msg(&config, &file_config, path, 1, NULL));
 }
 
 TEST(t_dlt_logstorage_prepare_on_msg, null)
 {
-    EXPECT_EQ(DLT_RETURN_ERROR, dlt_logstorage_prepare_on_msg(NULL, NULL, NULL, 0));
+    EXPECT_EQ(DLT_RETURN_ERROR, dlt_logstorage_prepare_on_msg(NULL, NULL, NULL, 0, NULL));
 }
 
 /* Begin Method: dlt_logstorage::t_dlt_logstorage_write_on_msg*/
@@ -926,12 +932,13 @@ TEST(t_dlt_logstorage_write_on_msg, normal)
     config.file_name = (char *)"Test";
     config.records = NULL;
     config.log = NULL;
+    config.working_file_name = NULL;
     unsigned int size = 8;
     unsigned char data1[] = "dlt_data";
     unsigned char data2[] = "dlt_data";
     unsigned char data3[] = "dlt_data";
 
-    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_on_msg(&config, &file_config, path, 1));
+    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_on_msg(&config, &file_config, path, 1, NULL));
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_write_on_msg(&config, &file_config, path,
               data1, size, data2, size, data3, size));
 }
@@ -954,6 +961,7 @@ TEST(t_dlt_logstorage_sync_on_msg, normal)
     config.file_name = (char *)"Test";
     config.records = NULL;
     config.log = NULL;
+    config.working_file_name = NULL;
     char *path = NULL;
 
     EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_sync_on_msg(&config, &file_config, path, DLT_LOGSTORAGE_SYNC_ON_MSG));
@@ -984,16 +992,17 @@ TEST(t_dlt_logstorage_prepare_msg_cache, normal)
     config.cache = NULL;
     config.file_size = 0;
     config.sync = DLT_LOGSTORAGE_SYNC_ON_DEMAND;
+    config.working_file_name = NULL;
     g_logstorage_cache_max = 16;
 
-    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_msg_cache(&config, &file_config, path, 1));
+    EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_msg_cache(&config, &file_config, path, 1, NULL));
 
     free(config.cache);
 }
 
 TEST(t_dlt_logstorage_prepare_msg_cache, null)
 {
-    EXPECT_EQ(DLT_RETURN_ERROR, dlt_logstorage_prepare_msg_cache(NULL, NULL, NULL, 0));
+    EXPECT_EQ(DLT_RETURN_ERROR, dlt_logstorage_prepare_msg_cache(NULL, NULL, NULL, 0, NULL));
 }
 
 /* Begin Method: dlt_logstorage::t_dlt_logstorage_write_msg_cache*/
@@ -1571,7 +1580,7 @@ TEST(t_dlt_logstorage_sync_to_file, normal)
     config.cache = calloc(1, config.file_size + sizeof(DltLogStorageCacheFooter));
 
     if (config.cache != NULL) {
-        EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_msg_cache(&config, &file_config, path, 1));
+        EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_msg_cache(&config, &file_config, path, 1, NULL));
         EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_write_msg_cache(&config, &file_config, path,
                   data1, size, data2, size, data3, size));
 
@@ -1624,7 +1633,7 @@ TEST(t_dlt_logstorage_sync_msg_cache, normal)
     config.cache = calloc(1, 50 + sizeof(DltLogStorageCacheFooter));
 
     if (config.cache != NULL) {
-        EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_msg_cache(&config, &file_config, path, 1));
+        EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_prepare_msg_cache(&config, &file_config, path, 1, NULL));
         EXPECT_EQ(DLT_RETURN_OK, dlt_logstorage_write_msg_cache(&config, &file_config, path, data1, size, data2, size, data3, size));
         EXPECT_EQ(DLT_RETURN_OK,
                   dlt_logstorage_sync_msg_cache(&config, &file_config, path, DLT_LOGSTORAGE_SYNC_ON_DEMAND));

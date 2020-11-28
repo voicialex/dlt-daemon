@@ -71,9 +71,7 @@
 #include <syslog.h>
 #include <errno.h>
 #include <unistd.h>
-#include <fcntl.h>
 
-#include <sys/types.h>  /* send() */
 #include <sys/socket.h> /* send() */
 
 #include "dlt_types.h"
@@ -481,12 +479,8 @@ DltDaemonApplication *dlt_daemon_application_add(DltDaemon *daemon,
         application->application_description = malloc(strlen(description) + 1);
 
         if (application->application_description) {
-            strncpy(application->application_description,
-                    description,
-                    strlen(description));
-            application->application_description[strlen(description)] = '\0';
-        }
-        else {
+            memcpy(application->application_description, description, strlen(description) + 1);
+        } else {
             dlt_log(LOG_ERR, "Cannot allocate memory to store application description\n");
             free(application);
             return (DltDaemonApplication *)NULL;
@@ -874,8 +868,7 @@ DltDaemonContext *dlt_daemon_context_add(DltDaemon *daemon,
         context->context_description = malloc(strlen(description) + 1);
 
         if (context->context_description) {
-            strncpy(context->context_description, description, strlen(description));
-            context->context_description[strlen(description)] = '\0';
+            memcpy(context->context_description, description, strlen(description) + 1);
         }
     }
 

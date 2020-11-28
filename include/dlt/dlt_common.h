@@ -77,6 +77,7 @@
 #   include <stdio.h>
 #   ifdef __linux__
 #      include <linux/limits.h>
+#      include <sys/socket.h>
 #   else
 #      include <limits.h>
 #   endif
@@ -86,6 +87,12 @@
 #      include <time.h>
 #   endif
 
+#   if defined(__GNUC__)
+#      define PURE_FUNCTION __attribute__((pure))
+#   else
+#      define PURE_FUNCTION /* nothing */
+#   endif
+
 #   if !defined (__WIN32__) && !defined(_MSC_VER)
 #      include <termios.h>
 #   endif
@@ -93,14 +100,12 @@
 #   include "dlt_types.h"
 #   include "dlt_protocol.h"
 
-#   if !defined (PACKED)
-#      define PACKED __attribute__((aligned(1), packed))
-#   endif
+#   define DLT_PACKED __attribute__((aligned(1), packed))
 
 #   if defined (__MSDOS__) || defined (_MSC_VER)
 /* set instead /Zp8 flag in Visual C++ configuration */
-#      undef PACKED
-#      define PACKED
+#      undef DLT_PACKED
+#      define DLT_PACKED
 #   endif
 
 /*
@@ -187,7 +192,8 @@ enum {
     DLT_LOG_TO_CONSOLE = 0,
     DLT_LOG_TO_SYSLOG = 1,
     DLT_LOG_TO_FILE = 2,
-    DLT_LOG_DROPPED = 3
+    DLT_LOG_TO_STDERR = 3,
+    DLT_LOG_DROPPED = 4
 };
 
 /**
@@ -210,6 +216,9 @@ enum {
 #   define DLT_SIZE_WEID DLT_ID_SIZE
 #   define DLT_SIZE_WSID (sizeof(uint32_t))
 #   define DLT_SIZE_WTMS (sizeof(uint32_t))
+
+/* Size of buffer for text output */
+#define DLT_CONVERT_TEXTBUFSIZE  10024
 
 /**
  * Definitions for GET_LOG_INFO
@@ -400,6 +409,7 @@ enum {
 typedef enum
 {
     DLT_RECEIVE_SOCKET,
+    DLT_RECEIVE_UDP_SOCKET,
     DLT_RECEIVE_FD
 } DltReceiverType;
 
@@ -413,10 +423,12 @@ extern const char dltSerialHeader[DLT_ID_SIZE];
  */
 extern char dltSerialHeaderChar[DLT_ID_SIZE];
 
+#ifndef DLT_USE_UNIX_SOCKET_IPC
 /**
  * The common base-path of the dlt-daemon-fifo and application-generated fifos
  */
 extern char dltFifoBaseDir[DLT_PATH_MAX];
+#endif
 
 #ifdef DLT_SHM_ENABLE
 /**
@@ -439,7 +451,7 @@ typedef struct
     uint32_t seconds;          /**< seconds since 1.1.1970 */
     int32_t microseconds;      /**< Microseconds */
     char ecu[DLT_ID_SIZE];     /**< The ECU id is added, if it is not already in the DLT message itself */
-} PACKED DltStorageHeader;
+} DLT_PACKED DltStorageHeader;
 
 /**
  * The structure of the DLT standard header. This header is used in each DLT message.
@@ -449,7 +461,7 @@ typedef struct
     uint8_t htyp;           /**< This parameter contains several informations, see definitions below */
     uint8_t mcnt;           /**< The message counter is increased with each sent DLT message */
     uint16_t len;           /**< Length of the complete message, without storage header */
-} PACKED DltStandardHeader;
+} DLT_PACKED DltStandardHeader;
 
 /**
  * The structure of the DLT extra header parameters. Each parameter is sent only if enabled in htyp.
@@ -459,7 +471,7 @@ typedef struct
     char ecu[DLT_ID_SIZE];       /**< ECU id */
     uint32_t seid;               /**< Session number */
     uint32_t tmsp;               /**< Timestamp since system start in 0.1 milliseconds */
-} PACKED DltStandardHeaderExtra;
+} DLT_PACKED DltStandardHeaderExtra;
 
 /**
  * The structure of the DLT extended header. This header is only sent if enabled in htyp parameter.
@@ -470,7 +482,7 @@ typedef struct
     uint8_t noar;              /**< number of arguments */
     char apid[DLT_ID_SIZE];    /**< application id */
     char ctid[DLT_ID_SIZE];    /**< context id */
-} PACKED DltExtendedHeader;
+} DLT_PACKED DltExtendedHeader;
 
 /**
  * The structure to organise the DLT messages.
@@ -511,12 +523,12 @@ typedef struct
     char apid[DLT_ID_SIZE];         /**< application id */
     char ctid[DLT_ID_SIZE];         /**< context id */
     char com[DLT_ID_SIZE];          /**< communication interface */
-} PACKED DltServiceGetLogInfoRequest;
+} DLT_PACKED DltServiceGetLogInfoRequest;
 
 typedef struct
 {
     uint32_t service_id;            /**< service ID */
-} PACKED DltServiceGetDefaultLogLevelRequest;
+} DLT_PACKED DltServiceGetDefaultLogLevelRequest;
 
 /**
  * The structure of the DLT Service Get Log Info response.
@@ -564,7 +576,7 @@ typedef struct
     char ctid[DLT_ID_SIZE];         /**< context id */
     uint8_t log_level;              /**< log level to be set */
     char com[DLT_ID_SIZE];          /**< communication interface */
-} PACKED DltServiceSetLogLevel;
+} DLT_PACKED DltServiceSetLogLevel;
 
 /**
  * The structure of the DLT Service Set Default Log Level.
@@ -574,7 +586,7 @@ typedef struct
     uint32_t service_id;                /**< service ID */
     uint8_t log_level;                  /**< default log level to be set */
     char com[DLT_ID_SIZE];              /**< communication interface */
-} PACKED DltServiceSetDefaultLogLevel;
+} DLT_PACKED DltServiceSetDefaultLogLevel;
 
 /**
  * The structure of the DLT Service Set Verbose Mode
@@ -583,7 +595,7 @@ typedef struct
 {
     uint32_t service_id;            /**< service ID */
     uint8_t new_status;             /**< new status to be set */
-} PACKED DltServiceSetVerboseMode;
+} DLT_PACKED DltServiceSetVerboseMode;
 
 /**
  * The structure of the DLT Service Set Communication Interface Status
@@ -593,7 +605,7 @@ typedef struct
     uint32_t service_id;            /**< service ID */
     char com[DLT_ID_SIZE];          /**< communication interface */
     uint8_t new_status;             /**< new status to be set */
-} PACKED DltServiceSetCommunicationInterfaceStatus;
+} DLT_PACKED DltServiceSetCommunicationInterfaceStatus;
 
 /**
  * The structure of the DLT Service Set Communication Maximum Bandwidth
@@ -603,20 +615,20 @@ typedef struct
     uint32_t service_id;            /**< service ID */
     char com[DLT_ID_SIZE];          /**< communication interface */
     uint32_t max_bandwidth;         /**< maximum bandwith */
-} PACKED DltServiceSetCommunicationMaximumBandwidth;
+} DLT_PACKED DltServiceSetCommunicationMaximumBandwidth;
 
 typedef struct
 {
     uint32_t service_id;            /**< service ID */
     uint8_t status;                 /**< reponse status */
-} PACKED DltServiceResponse;
+} DLT_PACKED DltServiceResponse;
 
 typedef struct
 {
     uint32_t service_id;            /**< service ID */
     uint8_t status;                 /**< reponse status */
     uint8_t log_level;              /**< log level */
-} PACKED DltServiceGetDefaultLogLevelResponse;
+} DLT_PACKED DltServiceGetDefaultLogLevelResponse;
 
 typedef struct
 {
@@ -624,12 +636,12 @@ typedef struct
     uint8_t status;                 /**< reponse status */
     uint8_t overflow;               /**< overflow status */
     uint32_t overflow_counter;      /**< overflow counter */
-} PACKED DltServiceMessageBufferOverflowResponse;
+} DLT_PACKED DltServiceMessageBufferOverflowResponse;
 
 typedef struct
 {
     uint32_t service_id;            /**< service ID */
-} PACKED DltServiceGetSoftwareVersion;
+} DLT_PACKED DltServiceGetSoftwareVersion;
 
 typedef struct
 {
@@ -637,7 +649,7 @@ typedef struct
     uint8_t status;                 /**< reponse status */
     uint32_t length;                /**< length of following payload */
     char *payload;                  /**< payload */
-} PACKED DltServiceGetSoftwareVersionResponse;
+} DLT_PACKED DltServiceGetSoftwareVersionResponse;
 
 /**
  * The structure of the DLT Service Unregister Context.
@@ -649,7 +661,7 @@ typedef struct
     char apid[DLT_ID_SIZE];         /**< application id */
     char ctid[DLT_ID_SIZE];         /**< context id */
     char comid[DLT_ID_SIZE];        /**< communication interface */
-} PACKED DltServiceUnregisterContext;
+} DLT_PACKED DltServiceUnregisterContext;
 
 /**
  * The structure of the DLT Service Connection Info
@@ -660,7 +672,7 @@ typedef struct
     uint8_t status;                 /**< reponse status */
     uint8_t state;                  /**< new state */
     char comid[DLT_ID_SIZE];        /**< communication interface */
-} PACKED DltServiceConnectionInfo;
+} DLT_PACKED DltServiceConnectionInfo;
 
 /**
  * The structure of the DLT Service Timezone
@@ -671,7 +683,7 @@ typedef struct
     uint8_t status;                 /**< reponse status */
     int32_t timezone;               /**< Timezone in seconds */
     uint8_t isdst;                  /**< Is daylight saving time */
-} PACKED DltServiceTimezone;
+} DLT_PACKED DltServiceTimezone;
 
 /**
  * The structure of the DLT Service Marker
@@ -680,7 +692,7 @@ typedef struct
 {
     uint32_t service_id;            /**< service ID */
     uint8_t status;                 /**< reponse status */
-} PACKED DltServiceMarker;
+} DLT_PACKED DltServiceMarker;
 
 /***
  * The structure of the DLT Service Offline Logstorage
@@ -691,17 +703,14 @@ typedef struct
     char mount_point[DLT_MOUNT_PATH_MAX]; /**< storage device mount point */
     uint8_t connection_type;              /**< connection status of the connected device connected/disconnected */
     char comid[DLT_ID_SIZE];              /**< communication interface */
-} PACKED DltServiceOfflineLogstorage;
+} DLT_PACKED DltServiceOfflineLogstorage;
 
-/**
- * The structure of DLT Service Passive Node Connect
- */
 typedef struct
 {
     uint32_t service_id;            /**< service ID */
     uint32_t connection_status;     /**< connect/disconnect */
     char node_id[DLT_ID_SIZE];      /**< passive node ID */
-} PACKED DltServicePassiveNodeConnect;
+} DLT_PACKED DltServicePassiveNodeConnect;
 
 /**
  * The structure of DLT Service Passive Node Connection Status
@@ -713,7 +722,7 @@ typedef struct
     uint32_t num_connections;                  /**< number of connections */
     uint8_t connection_status[DLT_ENTRY_MAX];  /**< list of connection status */
     char node_id[DLT_ENTRY_MAX];               /**< list of passive node IDs */
-} PACKED DltServicePassiveNodeConnectionInfo;
+} DLT_PACKED DltServicePassiveNodeConnectionInfo;
 
 /**
  * Structure to store filter parameters.
@@ -766,11 +775,12 @@ typedef struct
     int32_t lastBytesRcvd;    /**< bytes received in last receive call */
     int32_t bytesRcvd;        /**< received bytes */
     int32_t totalBytesRcvd;   /**< total number of received bytes */
-    char *buffer;         /**< pointer to receiver buffer */
-    char *buf;            /**< pointer to position within receiver buffer */
-    char *backup_buf;     /** pointer to the buffer with partial messages if any **/
-    int fd;               /**< connection handle */
+    char *buffer;             /**< pointer to receiver buffer */
+    char *buf;                /**< pointer to position within receiver buffer */
+    char *backup_buf;         /** pointer to the buffer with partial messages if any **/
+    int fd;                   /**< connection handle */
     int32_t buffersize;       /**< size of receiver buffer */
+    struct sockaddr_in addr;  /**< socket address information */
 } DltReceiver;
 
 typedef struct
@@ -855,6 +865,17 @@ DltReturnValue dlt_print_mixed_string(char *text, int textlength, uint8_t *ptr, 
  * @return negative value if there was an error
  */
 DltReturnValue dlt_print_char_string(char **text, int textlength, uint8_t *ptr, int size);
+
+/**
+ * Helper function to determine a bounded length of a string.
+ * This function returns zero if @a str is a null pointer,
+ * and it returns @a maxsize if the null character was not found in the first @a maxsize bytes of @a str.
+ * This is a re-implementation of C11's strnlen_s, which we cannot yet assume to be available.
+ * @param text pointer to string whose length is to be determined
+ * @param maxsize maximal considered length of @a str
+ * @return the bounded length of the string
+ */
+PURE_FUNCTION size_t dlt_strnlen_s(const char* str, size_t maxsize);
 
 /**
  * Helper function to print an id.
@@ -1046,6 +1067,17 @@ DltReturnValue dlt_file_set_filter(DltFile *file, DltFilter *filter, int verbose
  */
 DltReturnValue dlt_file_open(DltFile *file, const char *filename, int verbose);
 /**
+ * This function reads DLT file and parse DLT message one by one.
+ * Each message will be written into new file.
+ * If a filter is set, the filter list is used.
+ * @param file pointer to structure of organizing access to DLT file
+ * @param filename file to contain parsed DLT messages.
+ * @param type 1 = payload as hex, 2 = payload as ASCII.
+ * @param verbose if set to true verbose information is printed out.
+ * @return 0 = message does not match filter, 1 = message was read, negative value if there was an error
+ */
+DltReturnValue dlt_file_quick_parsing(DltFile *file, const char *filename, int type, int verbose);
+/**
  * Find next message in the DLT file and parse them.
  * This function finds the next message in the DLT file.
  * If a filter is set, the filter list is used.
@@ -1125,6 +1157,13 @@ DltReturnValue dlt_file_free(DltFile *file, int verbose);
  * @param filename the filename
  */
 void dlt_log_set_filename(const char *filename);
+#ifndef DLT_USE_UNIX_SOCKET_IPC
+/**
+ * Set FIFO base direction
+ * @param pipe_dir the pipe direction
+ */
+void dlt_log_set_fifo_basedir(const char *pipe_dir);
+#endif
 /**
  * Set internal logging level
  * @param level the level
@@ -1132,9 +1171,15 @@ void dlt_log_set_filename(const char *filename);
 void dlt_log_set_level(int level);
 /**
  * Initialize (external) logging facility
- * @param mode positive, 0 = log to stdout, 1 = log to syslog, 2 = log to file
+ * @param mode positive, 0 = log to stdout, 1 = log to syslog, 2 = log to file, 3 = log to stderr
  */
 void dlt_log_init(int mode);
+/**
+ * Print with variable arguments to specified file descriptor by DLT_LOG_MODE environment variable (like fprintf)
+ * @param format format string for message
+ * @return negative value if there was an error or the total number of characters written is returned on success
+ */
+int dlt_user_printf(const char *format, ...);
 /**
  * Log ASCII string with null-termination to (external) logging facility
  * @param prio priority (see syslog() call)

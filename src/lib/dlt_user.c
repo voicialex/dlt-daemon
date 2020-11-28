@@ -43,7 +43,7 @@
 #include <errno.h>
 
 #include <sys/uio.h> /* writev() */
-#include <sys/poll.h>
+#include <poll.h>
 
 #include <limits.h>
 #ifdef linux
@@ -95,7 +95,7 @@ static int atexit_registered = 0;
 /* used to disallow DLT usage in fork() child */
 static int g_dlt_is_child = 0;
 /* String truncate message */
-static const char *STR_TRUNCATED_MESSAGE = "... <<Message truncated, too long>>";
+static const char STR_TRUNCATED_MESSAGE[] = "... <<Message truncated, too long>>";
 
 /* Enum for type of string */
 enum StringType
@@ -104,16 +104,21 @@ enum StringType
     UTF8_STRING = 1
 };
 
+#define DLT_UNUSED(x) (void)(x)
+
+/* Network trace */
+#ifdef DLT_NETWORK_TRACE_ENABLE
+#define DLT_USER_SEGMENTED_THREAD (1<<2)
+
 /* Segmented Network Trace */
 #define DLT_MAX_TRACE_SEGMENT_SIZE 1024
 #define DLT_MESSAGE_QUEUE_NAME "/dlt_message_queue"
 #define DLT_DELAYED_RESEND_INDICATOR_PATTERN 0xFFFF
 
-#define DLT_UNUSED(x) (void)(x)
-
 /* Mutex to wait on while message queue is not initialized */
 pthread_mutex_t mq_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t mq_init_condition;
+#endif /* DLT_NETWORK_TRACE_ENABLE */
 
 void dlt_lock_mutex(pthread_mutex_t *mutex)
 {
@@ -160,8 +165,6 @@ static DltReturnValue dlt_user_print_msg(DltMessage *msg, DltContextData *log);
 static DltReturnValue dlt_user_log_check_user_message(void);
 static void dlt_user_log_reattach_to_daemon(void);
 static DltReturnValue dlt_user_log_send_overflow(void);
-static void dlt_user_trace_network_segmented_thread(void *unused);
-static void dlt_user_trace_network_segmented_thread_segmenter(s_segmented_data *data);
 static DltReturnValue dlt_user_log_out_error_handling(void *ptr1,
                                                       size_t len1,
                                                       void *ptr2,
@@ -172,9 +175,16 @@ static void dlt_user_cleanup_handler(void *arg);
 static int dlt_start_threads();
 static void dlt_stop_threads();
 static void dlt_fork_child_fork_handler();
+#ifdef DLT_NETWORK_TRACE_ENABLE
+static void dlt_user_trace_network_segmented_thread(void *unused);
+static void dlt_user_trace_network_segmented_thread_segmenter(s_segmented_data *data);
+#endif
 
 static DltReturnValue dlt_user_log_write_string_utils(DltContextData *log, const char *text,
                                                       const enum StringType type);
+static DltReturnValue dlt_user_log_write_sized_string_utils(DltContextData *log, const char *text,
+                                                            uint16_t text_len, const enum StringType type);
+
 
 DltReturnValue dlt_user_check_library_version(const char *user_major_version, const char *user_minor_version)
 {
@@ -340,6 +350,9 @@ static DltReturnValue dlt_initialize_fifo_connection(void)
 
 DltReturnValue dlt_init(void)
 {
+    /* check environment variables */
+    dlt_check_envvar();
+
     /* process is exiting. Do not allocate new resources. */
     if (dlt_user_freeing != 0) {
         dlt_vlog(LOG_INFO, "%s logging disabled, process is exiting", __func__);
@@ -356,12 +369,6 @@ DltReturnValue dlt_init(void)
         dlt_user_initialised = false;
         return DLT_RETURN_ERROR;
     }
-
-    strncpy(dltFifoBaseDir, DLT_USER_IPC_PATH, DLT_PATH_MAX);
-    dltFifoBaseDir[DLT_PATH_MAX - 1] = 0;
-
-    /* check environment variables */
-    dlt_check_envvar();
 
     dlt_user.dlt_is_file = 0;
     dlt_user.overflow = 0;
@@ -397,11 +404,13 @@ DltReturnValue dlt_init(void)
 
 #endif
 
+#ifdef DLT_NETWORK_TRACE_ENABLE
     /* These will be lazy initialized only when needed */
     dlt_user.dlt_segmented_queue_read_handle = -1;
     dlt_user.dlt_segmented_queue_write_handle = -1;
 
     pthread_cond_init(&mq_init_condition, NULL);
+#endif
 
     if (dlt_start_threads() < 0) {
         dlt_user_initialised = false;
@@ -452,6 +461,7 @@ DltReturnValue dlt_init_file(const char *name)
     return DLT_RETURN_OK;
 }
 
+#ifdef DLT_NETWORK_TRACE_ENABLE
 DltReturnValue dlt_init_message_queue(void)
 {
     dlt_lock_mutex(&mq_mutex);
@@ -516,6 +526,7 @@ DltReturnValue dlt_init_message_queue(void)
     dlt_unlock_mutex(&mq_mutex);
     return DLT_RETURN_OK;
 }
+#endif /* DLT_NETWORK_TRACE_ENABLE */
 
 DltReturnValue dlt_init_common(void)
 {
@@ -931,6 +942,7 @@ DltReturnValue dlt_free(void)
     dlt_env_free_ll_set(&dlt_user.initial_ll_set);
     DLT_SEM_FREE();
 
+#ifdef DLT_NETWORK_TRACE_ENABLE
     char queue_name[NAME_MAX];
     snprintf(queue_name, NAME_MAX, "%s.%d", DLT_MESSAGE_QUEUE_NAME, getpid());
 
@@ -952,6 +964,7 @@ DltReturnValue dlt_free(void)
     dlt_user.dlt_segmented_queue_read_handle = DLT_FD_INIT;
 
     pthread_cond_destroy(&mq_init_condition);
+#endif /* DLT_NETWORK_TRACE_ENABLE */
     sem_destroy(&dlt_mutex);
 
     /* allow the user app to do dlt_init() again. */
@@ -1027,10 +1040,8 @@ DltReturnValue dlt_register_app(const char *apid, const char *description)
         dlt_user.application_description = malloc(desc_len + 1);
 
         if (dlt_user.application_description) {
-            strncpy(dlt_user.application_description, description, desc_len);
-            dlt_user.application_description[desc_len] = '\0';
-        }
-        else {
+            strncpy(dlt_user.application_description, description, desc_len + 1);
+        } else {
             DLT_SEM_FREE();
             return DLT_RETURN_ERROR;
         }
@@ -1193,40 +1204,43 @@ DltReturnValue dlt_register_context_ll_ts_llccb(DltContext *handle,
         }
     }
 
+    /* New context entry to be initialized */
+    dlt_ll_ts_type *ctx_entry;
+    ctx_entry = &dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries];
+
     /* Store locally context id and context description */
-    dlt_set_id(dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].contextID, contextid);
+    dlt_set_id(ctx_entry->contextID, contextid);
 
-    if (dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description != 0)
-        free(dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description);
+    if (ctx_entry->context_description != 0)
+        free(ctx_entry->context_description);
 
-    dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description = 0;
+    ctx_entry->context_description = 0;
 
     if (description != 0) {
         size_t desc_len = strlen(description);
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description = malloc(desc_len + 1);
+        ctx_entry->context_description = malloc(desc_len + 1);
 
-        if (dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description == 0) {
+        if (ctx_entry->context_description == 0) {
             DLT_SEM_FREE();
             return DLT_RETURN_ERROR;
         }
 
-        strncpy(dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description, description, desc_len);
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description[desc_len] = '\0';
+        strncpy(ctx_entry->context_description, description, desc_len + 1);
     }
 
-    if (dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level_ptr == 0) {
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level_ptr = malloc(sizeof(int8_t));
+    if (ctx_entry->log_level_ptr == 0) {
+        ctx_entry->log_level_ptr = malloc(sizeof(int8_t));
 
-        if (dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level_ptr == 0) {
+        if (ctx_entry->log_level_ptr == 0) {
             DLT_SEM_FREE();
             return DLT_RETURN_ERROR;
         }
     }
 
-    if (dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].trace_status_ptr == 0) {
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].trace_status_ptr = malloc(sizeof(int8_t));
+    if (ctx_entry->trace_status_ptr == 0) {
+        ctx_entry->trace_status_ptr = malloc(sizeof(int8_t));
 
-        if (dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].trace_status_ptr == 0) {
+        if (ctx_entry->trace_status_ptr == 0) {
             DLT_SEM_FREE();
             return DLT_RETURN_ERROR;
         }
@@ -1239,31 +1253,29 @@ DltReturnValue dlt_register_context_ll_ts_llccb(DltContext *handle,
                                              DLT_USER_LOG_LEVEL_NOT_SET);
 
     if (envLogLevel != DLT_USER_LOG_LEVEL_NOT_SET) {
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level = envLogLevel;
+        ctx_entry->log_level = envLogLevel;
         loglevel = envLogLevel;
     }
     else if (loglevel != DLT_USER_LOG_LEVEL_NOT_SET)
     {
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level = loglevel;
+        ctx_entry->log_level = loglevel;
     }
 
     if (tracestatus != DLT_USER_TRACE_STATUS_NOT_SET)
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].trace_status = tracestatus;
+        ctx_entry->trace_status = tracestatus;
 
     /* Prepare transfer struct */
     dlt_set_id(handle->contextID, contextid);
     handle->log_level_pos = dlt_user.dlt_ll_ts_num_entries;
 
-    handle->log_level_ptr = dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level_ptr;
-    handle->trace_status_ptr = dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].trace_status_ptr;
+    handle->log_level_ptr = ctx_entry->log_level_ptr;
+    handle->trace_status_ptr = ctx_entry->trace_status_ptr;
 
-    log.context_description = dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].context_description;
+    log.context_description = ctx_entry->context_description;
 
-    *(dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level_ptr) =
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level;
-    *(dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].trace_status_ptr) =
-        dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].trace_status = tracestatus;
-    dlt_user.dlt_ll_ts[dlt_user.dlt_ll_ts_num_entries].log_level_changed_callback = dlt_log_level_changed_callback;
+    *(ctx_entry->log_level_ptr) = ctx_entry->log_level;
+    *(ctx_entry->trace_status_ptr) = ctx_entry->trace_status = tracestatus;
+    ctx_entry->log_level_changed_callback = dlt_log_level_changed_callback;
 
     log.log_level = loglevel;
     log.trace_status = tracestatus;
@@ -1488,6 +1500,8 @@ int dlt_get_log_state()
 
 DltReturnValue dlt_set_log_mode(DltUserLogMode mode)
 {
+    DLT_UNUSED(mode);
+
     /* forbid dlt usage in child after fork */
     if (g_dlt_is_child)
         return DLT_RETURN_ERROR;
@@ -2330,10 +2344,21 @@ DltReturnValue dlt_user_log_write_string(DltContextData *log, const char *text)
     return dlt_user_log_write_string_utils(log, text, ASCII_STRING);
 }
 
+DltReturnValue dlt_user_log_write_sized_string(DltContextData *log, const char *text, uint16_t length)
+{
+    return dlt_user_log_write_sized_string_utils(log, text, length, ASCII_STRING);
+}
+
 DltReturnValue dlt_user_log_write_constant_string(DltContextData *log, const char *text)
 {
     /* Send parameter only in verbose mode */
     return dlt_user.verbose_mode ? dlt_user_log_write_string(log, text) : DLT_RETURN_OK;
+}
+
+DltReturnValue dlt_user_log_write_sized_constant_string(DltContextData *log, const char *text, uint16_t length)
+{
+    /* Send parameter only in verbose mode */
+    return dlt_user.verbose_mode ? dlt_user_log_write_sized_string(log, text, length) : DLT_RETURN_OK;
 }
 
 DltReturnValue dlt_user_log_write_utf8_string(DltContextData *log, const char *text)
@@ -2341,7 +2366,12 @@ DltReturnValue dlt_user_log_write_utf8_string(DltContextData *log, const char *t
     return dlt_user_log_write_string_utils(log, text, UTF8_STRING);
 }
 
-DltReturnValue dlt_user_log_write_string_utils(DltContextData *log, const char *text, const enum StringType type)
+DltReturnValue dlt_user_log_write_sized_utf8_string(DltContextData *log, const char *text, uint16_t length)
+{
+    return dlt_user_log_write_sized_string_utils(log, text, length, UTF8_STRING);
+}
+
+DltReturnValue dlt_user_log_write_sized_string_utils(DltContextData *log, const char *text, uint16_t length, const enum StringType type)
 {
     uint16_t arg_size = 0;
     uint32_t type_info = 0;
@@ -2359,7 +2389,7 @@ DltReturnValue dlt_user_log_write_string_utils(DltContextData *log, const char *
         return DLT_RETURN_ERROR;
     }
 
-    arg_size = strlen(text) + 1;
+    arg_size = length + 1;
 
     new_log_size = log->size + arg_size + sizeof(uint16_t);
 
@@ -2445,7 +2475,9 @@ DltReturnValue dlt_user_log_write_string_utils(DltContextData *log, const char *
     case DLT_RETURN_OK:
     {
         /* Whole string will be copied */
-        memcpy((log->buffer) + log->size, text, arg_size);
+        memcpy((log->buffer) + log->size, text, length);
+        /* The input string might not be null-terminated, so we're doing that by ourselves */
+        log->buffer[log->size + length] = '\0';
         log->size += arg_size;
         break;
     }
@@ -2470,6 +2502,15 @@ DltReturnValue dlt_user_log_write_string_utils(DltContextData *log, const char *
     log->args_num++;
 
     return ret;
+}
+
+DltReturnValue dlt_user_log_write_string_utils(DltContextData *log, const char *text, const enum StringType type)
+{
+    if ((log == NULL) || (text == NULL))
+        return DLT_RETURN_WRONG_PARAMETER;
+
+    uint16_t length = strlen(text);
+    return dlt_user_log_write_sized_string_utils(log, text, length, type);
 }
 
 DltReturnValue dlt_register_injection_callback_with_id(DltContext *handle, uint32_t service_id,
@@ -2548,7 +2589,7 @@ DltReturnValue dlt_register_injection_callback_with_id(DltContext *handle, uint3
     dlt_user.dlt_ll_ts[i].injection_table[j].service_id = service_id;
 
     if (priv == NULL) {
-        dlt_user.dlt_ll_ts[i].injection_table[j].injection_callback = (dlt_injection_callback)dlt_injection_cbk;
+        dlt_user.dlt_ll_ts[i].injection_table[j].injection_callback = (dlt_injection_callback)(void*)dlt_injection_cbk;
         dlt_user.dlt_ll_ts[i].injection_table[j].injection_callback_with_id = NULL;
         dlt_user.dlt_ll_ts[i].injection_table[j].data = NULL;
     }
@@ -2570,7 +2611,7 @@ DltReturnValue dlt_register_injection_callback(DltContext *handle, uint32_t serv
 {
     return dlt_register_injection_callback_with_id(handle,
                                                    service_id,
-                                                   (dlt_injection_callback_id)dlt_injection_callback,
+                                                   (dlt_injection_callback_id)(void*)dlt_injection_callback,
                                                    NULL);
 }
 
@@ -2613,7 +2654,7 @@ DltReturnValue dlt_register_log_level_changed_callback(DltContext *handle,
  * NW Trace related
  */
 
-
+#ifdef DLT_NETWORK_TRACE_ENABLE
 int check_buffer(void)
 {
     int total_size, used_size;
@@ -2633,7 +2674,7 @@ DltReturnValue dlt_user_trace_network_segmented_start(uint32_t *id,
                                                       void *header,
                                                       uint16_t payload_len)
 {
-    DltContextData log;
+    DltContextData log = { 0 };
     struct timeval tv;
     int ret = DLT_RETURN_ERROR;
 
@@ -2750,7 +2791,7 @@ DltReturnValue dlt_user_trace_network_segmented_segment(uint32_t id,
         return DLT_RETURN_ERROR;
 
     if (handle->trace_status_ptr && (*(handle->trace_status_ptr) == DLT_TRACE_STATUS_ON)) {
-        DltContextData log;
+        DltContextData log = { 0 };
 
         if (dlt_user_log_init(handle, &log) < DLT_RETURN_OK)
             return DLT_RETURN_ERROR;
@@ -2808,7 +2849,7 @@ DltReturnValue dlt_user_trace_network_segmented_segment(uint32_t id,
 
 DltReturnValue dlt_user_trace_network_segmented_end(uint32_t id, DltContext *handle, DltNetworkTraceType nw_trace_type)
 {
-    DltContextData log;
+    DltContextData log = { 0 };
     int ret = DLT_RETURN_ERROR;
 
     if ((nw_trace_type < DLT_NW_TRACE_IPC) || (nw_trace_type >= DLT_NW_TRACE_MAX)) {
@@ -2862,7 +2903,6 @@ DltReturnValue dlt_user_trace_network_segmented_end(uint32_t id, DltContext *han
     return DLT_RETURN_OK;
 }
 
-
 void dlt_user_trace_network_segmented_thread(void *unused)
 {
     /* Unused on purpose. */
@@ -2878,8 +2918,10 @@ void dlt_user_trace_network_segmented_thread(void *unused)
         /* Wait until message queue is initialized */
         dlt_lock_mutex(&mq_mutex);
 
-        if (dlt_user.dlt_segmented_queue_read_handle < 0)
+        while (dlt_user.dlt_segmented_queue_read_handle < 0)
+        {
             pthread_cond_wait(&mq_init_condition, &mq_mutex);
+        }
 
         dlt_unlock_mutex(&mq_mutex);
 
@@ -3066,11 +3108,10 @@ DltReturnValue dlt_user_trace_network_truncated(DltContext *handle,
                                                 int allow_truncate)
 {
     int ret = DLT_RETURN_ERROR;
+    DltContextData log = { 0 };
 
     if ((payload == NULL) && (payload_len > 0))
         return DLT_RETURN_WRONG_PARAMETER;
-
-    DltContextData log;
 
     if ((nw_trace_type < DLT_NW_TRACE_IPC) || (nw_trace_type >= DLT_NW_TRACE_MAX)) {
         dlt_vlog(LOG_ERR, "Network trace type %d is outside valid range", nw_trace_type);
@@ -3104,7 +3145,7 @@ DltReturnValue dlt_user_trace_network_truncated(DltContext *handle,
         /* If truncation is allowed, check if we must do it */
         if ((allow_truncate > 0) && ((header_len + payload_len + sizeof(uint16_t)) > dlt_user.log_buf_len)) {
             /* Identify as truncated */
-            if (dlt_user_log_write_string(&log, DLT_TRACE_NW_END) < DLT_RETURN_OK) {
+            if (dlt_user_log_write_string(&log, DLT_TRACE_NW_TRUNCATED) < DLT_RETURN_OK) {
                 dlt_user_free_buffer(&(log.buffer));
                 return DLT_RETURN_ERROR;
             }
@@ -3161,6 +3202,7 @@ DltReturnValue dlt_user_trace_network_truncated(DltContext *handle,
 
     return DLT_RETURN_OK;
 }
+#endif /* DLT_NETWORK_TRACE_ENABLE */
 
 DltReturnValue dlt_log_string(DltContext *handle, DltLogLevelType loglevel, const char *text)
 {
@@ -3425,8 +3467,12 @@ DltReturnValue dlt_disable_local_print(void)
 static void dlt_user_cleanup_handler(void *arg)
 {
     DLT_UNUSED(arg); /* Satisfy compiler */
+
+#ifdef DLT_NETWORK_TRACE_ENABLE
     /* unlock the message queue */
     dlt_unlock_mutex(&mq_mutex);
+#endif
+
     /* unlock DLT (dlt_mutex) */
     DLT_SEM_FREE();
 }
@@ -4585,33 +4631,49 @@ int dlt_start_threads()
         return -1;
     }
 
+#ifdef DLT_NETWORK_TRACE_ENABLE
     /* Start the segmented thread */
     if (pthread_create(&(dlt_user.dlt_segmented_nwt_handle), NULL,
                        (void *)dlt_user_trace_network_segmented_thread, NULL)) {
         dlt_log(LOG_CRIT, "Can't start segmented thread!\n");
         return -1;
     }
-
+#endif
     return 0;
 }
 
 void dlt_stop_threads()
 {
     int dlt_housekeeperthread_result = 0;
-    int dlt_segmented_nwt_result = 0;
-    int tmp_errno = 0;
     int joined = 0;
 
     if (dlt_housekeeperthread_handle) {
         /* do not ignore return value */
+#ifndef __ANDROID_API__
         dlt_housekeeperthread_result = pthread_cancel(dlt_housekeeperthread_handle);
-        tmp_errno = errno;
+#else
+
+#ifdef DLT_NETWORK_TRACE_ENABLE
+        dlt_lock_mutex(&mq_mutex);
+#endif /* DLT_NETWORK_TRACE_ENABLE */
+        dlt_housekeeperthread_result = pthread_kill(dlt_housekeeperthread_handle, SIGKILL);
+        dlt_user_cleanup_handler(NULL);
+#endif
+
 
         if (dlt_housekeeperthread_result != 0)
             dlt_vlog(LOG_ERR,
-                     "ERROR pthread_cancel(dlt_housekeeperthread_handle): %s\n",
-                     strerror(tmp_errno));
+                     "ERROR %s(dlt_housekeeperthread_handle): %s\n",
+#ifndef __ANDROID_API__
+                     "pthread_cancel",
+#else
+                     "pthread_kill",
+#endif
+                     strerror(dlt_housekeeperthread_result));
     }
+
+#ifdef DLT_NETWORK_TRACE_ENABLE
+    int dlt_segmented_nwt_result = 0;
 
     if (dlt_user.dlt_segmented_nwt_handle) {
         dlt_lock_mutex(&mq_mutex);
@@ -4619,38 +4681,37 @@ void dlt_stop_threads()
         dlt_unlock_mutex(&mq_mutex);
 
         dlt_segmented_nwt_result = pthread_cancel(dlt_user.dlt_segmented_nwt_handle);
-        tmp_errno = errno;
 
         if (dlt_segmented_nwt_result != 0)
             dlt_vlog(LOG_ERR,
                      "ERROR pthread_cancel(dlt_user.dlt_segmented_nwt_handle): %s\n",
-                     strerror(tmp_errno));
+                     strerror(dlt_segmented_nwt_result));
     }
-
+#endif /* DLT_NETWORK_TRACE_ENABLE */
     /* make sure that the threads really finished working */
     if ((dlt_housekeeperthread_result == 0) && dlt_housekeeperthread_handle) {
         joined = pthread_join(dlt_housekeeperthread_handle, NULL);
-        tmp_errno = errno;
 
-        if (joined < 0)
+        if (joined != 0)
             dlt_vlog(LOG_ERR,
                      "ERROR pthread_join(dlt_housekeeperthread_handle, NULL): %s\n",
-                     strerror(tmp_errno));
+                     strerror(joined));
 
         dlt_housekeeperthread_handle = 0; /* set to invalid */
     }
 
+#ifdef DLT_NETWORK_TRACE_ENABLE
     if ((dlt_segmented_nwt_result == 0) && dlt_user.dlt_segmented_nwt_handle) {
         joined = pthread_join(dlt_user.dlt_segmented_nwt_handle, NULL);
-        tmp_errno = errno;
 
-        if (joined < 0)
+        if (joined != 0)
             dlt_vlog(LOG_ERR,
                      "ERROR pthread_join(dlt_user.dlt_segmented_nwt_handle, NULL): %s\n",
-                     strerror(tmp_errno));
+                     strerror(joined));
 
         dlt_user.dlt_segmented_nwt_handle = 0; /* set to invalid */
     }
+#endif /* DLT_NETWORK_TRACE_ENABLE */
 }
 
 static void dlt_fork_child_fork_handler()

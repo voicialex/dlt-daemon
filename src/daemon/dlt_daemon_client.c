@@ -33,7 +33,6 @@
 #include <stdlib.h>     /* for atoi() and exit() */
 #include <string.h>     /* for memset() */
 #include <unistd.h>     /* for close() */
-#include <fcntl.h>
 #include <signal.h>
 #include <syslog.h>
 #include <errno.h>
@@ -42,7 +41,6 @@
 #ifdef linux
 #   include <sys/timerfd.h>
 #endif
-#include <sys/stat.h>
 #include <sys/time.h>
 #if defined(linux) && defined(__NR_statx)
 #   include <linux/stat.h>
@@ -189,7 +187,7 @@ int dlt_daemon_client_send(int sock,
 
             if ((ret = dlt_daemon_serial_send(sock, data1, size1, data2, size2, daemon->sendserialheader))) {
                 DLT_DAEMON_SEM_FREE();
-                dlt_log(LOG_WARNING, "dlt_daemon_client_send: serial send dlt message failed\n");
+                dlt_vlog(LOG_WARNING, "%s: serial send dlt message failed\n", __func__);
                 return ret;
             }
 
@@ -200,7 +198,7 @@ int dlt_daemon_client_send(int sock,
 
             if ((ret = dlt_daemon_socket_send(sock, data1, size1, data2, size2, daemon->sendserialheader))) {
                 DLT_DAEMON_SEM_FREE();
-                dlt_log(LOG_WARNING, "dlt_daemon_client_send: socket send dlt message failed\n");
+                dlt_vlog(LOG_WARNING, "%s: socket send dlt message failed\n", __func__);
                 return ret;
             }
 
@@ -222,7 +220,7 @@ int dlt_daemon_client_send(int sock,
                 static int error_dlt_offline_trace_write_failed = 0;
 
                 if (!error_dlt_offline_trace_write_failed) {
-                    dlt_log(LOG_ERR, "dlt_daemon_client_send: dlt_offline_trace_write failed!\n");
+                    dlt_vlog(LOG_ERR, "%s: dlt_offline_trace_write failed!\n", __func__);
                     error_dlt_offline_trace_write_failed = 1;
                 }
 
@@ -275,20 +273,31 @@ int dlt_daemon_client_send(int sock,
     if ((sock != DLT_DAEMON_SEND_FORCE) &&
         ((daemon->state == DLT_DAEMON_STATE_BUFFER) || (daemon->state == DLT_DAEMON_STATE_SEND_BUFFER) ||
          (daemon->state == DLT_DAEMON_STATE_BUFFER_FULL))) {
-        if (daemon->state == DLT_DAEMON_STATE_BUFFER_FULL)
-            return DLT_DAEMON_ERROR_BUFFER_FULL;
-
-        DLT_DAEMON_SEM_LOCK();
-
-        /* Store message in history buffer */
-        if (dlt_buffer_push3(&(daemon->client_ringbuffer), data1, size1, data2, size2, 0, 0) < DLT_RETURN_OK) {
+        if (daemon->state != DLT_DAEMON_STATE_BUFFER_FULL) {
+            DLT_DAEMON_SEM_LOCK();
+            /* Store message in history buffer */
+            ret = dlt_buffer_push3(&(daemon->client_ringbuffer), data1, size1, data2, size2, 0, 0);
             DLT_DAEMON_SEM_FREE();
-            dlt_log(LOG_DEBUG, "dlt_daemon_client_send: Buffer is full! Message discarded.\n");
-            dlt_daemon_change_state(daemon, DLT_DAEMON_STATE_BUFFER_FULL);
+
+            if (ret < DLT_RETURN_OK) {
+                dlt_daemon_change_state(daemon, DLT_DAEMON_STATE_BUFFER_FULL);
+            }
+        }
+        if (daemon->state == DLT_DAEMON_STATE_BUFFER_FULL) {
+            daemon->overflow_counter += 1;
+            if (daemon->overflow_counter == 1)
+                dlt_vlog(LOG_INFO, "%s: Buffer is full! Messages will be discarded.\n", __func__);
+
             return DLT_DAEMON_ERROR_BUFFER_FULL;
         }
-
-        DLT_DAEMON_SEM_FREE();
+    } else {
+        if ((daemon->overflow_counter > 0) &&
+            (daemon_local->client_connections > 0) &&
+            (dlt_daemon_send_message_overflow(daemon, daemon_local, verbose) == DLT_DAEMON_ERROR_OK)) {
+            dlt_vlog(LOG_WARNING, "%s: %u messages discarded! Now able to send messages to the client.\n",
+                     __func__, daemon->overflow_counter);
+            daemon->overflow_counter = 0;
+        }
     }
 
     return DLT_DAEMON_ERROR_OK;
@@ -299,7 +308,6 @@ int dlt_daemon_client_send_message_to_all_client(DltDaemon *daemon,
                                        DltDaemonLocal *daemon_local,
                                        int verbose)
 {
-    int ret = DLT_DAEMON_ERROR_OK;
     static char text[DLT_DAEMON_TEXTSIZE];
     char * ecu_ptr = NULL;
 
@@ -361,27 +369,13 @@ int dlt_daemon_client_send_message_to_all_client(DltDaemon *daemon,
             dlt_log(LOG_WARNING, "dlt_message_print_header() failed!\n");
     }
 
-    /* check if overflow occurred */
-    if (daemon->overflow_counter) {
-        ret = dlt_daemon_send_message_overflow(daemon, daemon_local, verbose);
-        if (DLT_DAEMON_ERROR_OK == ret) {
-            dlt_vlog(LOG_WARNING, "%u messages discarded!\n",
-                     daemon->overflow_counter);
-            daemon->overflow_counter = 0;
-        }
-    }
-
     /* send message to client or write to log file */
-    ret = dlt_daemon_client_send(DLT_DAEMON_SEND_TO_ALL, daemon, daemon_local,
-            daemon_local->msg.headerbuffer, sizeof(DltStorageHeader),
-            daemon_local->msg.headerbuffer + sizeof(DltStorageHeader),
-            daemon_local->msg.headersize - sizeof(DltStorageHeader),
-            daemon_local->msg.databuffer, daemon_local->msg.datasize, verbose);
+    return dlt_daemon_client_send(DLT_DAEMON_SEND_TO_ALL, daemon, daemon_local,
+                daemon_local->msg.headerbuffer, sizeof(DltStorageHeader),
+                daemon_local->msg.headerbuffer + sizeof(DltStorageHeader),
+                daemon_local->msg.headersize - sizeof(DltStorageHeader),
+                daemon_local->msg.databuffer, daemon_local->msg.datasize, verbose);
 
-    if (ret == DLT_DAEMON_ERROR_BUFFER_FULL)
-        daemon->overflow_counter++;
-
-    return ret;
 }
 
 int dlt_daemon_client_send_control_message(int sock,
@@ -1550,7 +1544,7 @@ void dlt_daemon_control_callsw_cinjection(int sock,
 
     PRINT_FUNCTION_VERBOSE(verbose);
 
-    if ((daemon == NULL) || (msg == NULL) || (msg->databuffer == NULL))
+    if ((daemon == NULL) || (daemon_local == NULL) || (msg == NULL) || (msg->databuffer == NULL))
         return;
 
     datalength = msg->datasize;
@@ -1558,6 +1552,12 @@ void dlt_daemon_control_callsw_cinjection(int sock,
 
     DLT_MSG_READ_VALUE(id_tmp, ptr, datalength, uint32_t); /* Get service id */
     id = DLT_ENDIAN_GET_32(msg->standardheader->htyp, id_tmp);
+
+    /* injectionMode is disabled */
+    if (daemon_local->flags.injectionMode == 0) {
+        dlt_daemon_control_service_response(sock, daemon, daemon_local, id, DLT_SERVICE_RESPONSE_PERM_DENIED, verbose);
+        return;
+    }
 
     /* id is always less than DLT_DAEMON_INJECTION_MAX since its type is uinit32_t */
     if (id >= DLT_DAEMON_INJECTION_MIN) {

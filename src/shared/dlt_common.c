@@ -65,7 +65,10 @@
 
 const char dltSerialHeader[DLT_ID_SIZE] = { 'D', 'L', 'S', 1 };
 char dltSerialHeaderChar[DLT_ID_SIZE] = { 'D', 'L', 'S', 1 };
+
+#ifndef DLT_USE_UNIX_SOCKET_IPC
 char dltFifoBaseDir[DLT_PATH_MAX] = "/tmp";
+#endif
 
 #ifdef DLT_SHM_ENABLE
 char dltShmName[NAME_MAX + 1] = "/dlt-shm";
@@ -110,9 +113,9 @@ void dlt_print_hex(uint8_t *ptr, int size)
 
     for (num = 0; num < size; num++) {
         if (num > 0)
-            printf(" ");
+            dlt_user_printf(" ");
 
-        printf("%.2x", ((uint8_t *)ptr)[num]);
+        dlt_user_printf("%.2x", ((uint8_t *)ptr)[num]);
     }
 }
 
@@ -283,25 +286,32 @@ DltReturnValue dlt_print_char_string(char **text, int textlength, uint8_t *ptr, 
     return DLT_RETURN_OK;
 }
 
+size_t dlt_strnlen_s(const char* str, size_t maxsize)
+{
+    if (str == NULL)
+        return 0;
+
+    for (size_t i = 0; i < maxsize; ++i) {
+        if (str[i] == '\0')
+            return i;
+    }
+    return maxsize;
+}
+
 void dlt_print_id(char *text, const char *id)
 {
     /* check nullpointer */
     if ((text == NULL) || (id == NULL))
         return;
 
-    int i, len;
-
     /* Initialize text */
-    for (i = 0; i < DLT_ID_SIZE; i++)
-        text[i] = '-';
+    memset(text, '-', DLT_ID_SIZE);
 
     text[DLT_ID_SIZE] = 0;
 
-    len = ((strlen(id) <= DLT_ID_SIZE) ? strlen(id) : DLT_ID_SIZE);
+    size_t len = dlt_strnlen_s(id, DLT_ID_SIZE);
 
-    /* Check id*/
-    for (i = 0; i < len; i++)
-        text[i] = id[i];
+    memcpy(text, id, len);
 }
 
 void dlt_set_id(char *id, const char *text)
@@ -1152,22 +1162,40 @@ DltReturnValue dlt_file_read_header(DltFile *file, int verbose)
     if (file == NULL)
         return DLT_RETURN_WRONG_PARAMETER;
 
-    /* load header from file */
-    if (fread(file->msg.headerbuffer, sizeof(DltStorageHeader) + sizeof(DltStandardHeader), 1, file->handle) != 1) {
-        if (!feof(file->handle))
-            dlt_log(LOG_WARNING, "Cannot read header from file!\n");
+    /* Loop until storage header is found */
+    while (1) {
+        /* load header from file */
+        if (fread(file->msg.headerbuffer,
+                  sizeof(DltStorageHeader) + sizeof(DltStandardHeader), 1,
+                  file->handle) != 1) {
+            if (!feof(file->handle))
+                dlt_log(LOG_WARNING, "Cannot read header from file!\n");
+            else
+                dlt_log(LOG_DEBUG, "Reached end of file\n");
 
-        return DLT_RETURN_ERROR;
-    }
 
-    /* set ptrs to structures */
-    file->msg.storageheader = (DltStorageHeader *)file->msg.headerbuffer;
-    file->msg.standardheader = (DltStandardHeader *)(file->msg.headerbuffer + sizeof(DltStorageHeader));
+            return DLT_RETURN_ERROR;
+        }
 
-    /* check id of storage header */
-    if (dlt_check_storageheader(file->msg.storageheader) != DLT_RETURN_TRUE) {
-        dlt_log(LOG_WARNING, "DLT storage header pattern not found!\n");
-        return DLT_RETURN_ERROR;
+        /* set ptrs to structures */
+        file->msg.storageheader = (DltStorageHeader *)file->msg.headerbuffer;
+        file->msg.standardheader = (DltStandardHeader *)(file->msg.headerbuffer +
+                                                         sizeof(DltStorageHeader));
+
+        /* check id of storage header */
+        if (dlt_check_storageheader(file->msg.storageheader) != DLT_RETURN_TRUE) {
+            /* Shift the position back to the place where it stared to read + 1 */
+            if (fseek(file->handle,
+                      1 - (sizeof(DltStorageHeader) + sizeof(DltStandardHeader)),
+                      SEEK_CUR) < 0) {
+                dlt_log(LOG_WARNING, "DLT storage header pattern not found!\n");
+                return DLT_RETURN_ERROR;
+            }
+        }
+        else {
+            /* storage header is found */
+            break;
+        }
     }
 
     /* calculate complete size of headers */
@@ -1415,12 +1443,12 @@ DltReturnValue dlt_file_read(DltFile *file, int verbose)
     long *ptr;
     int found = DLT_RETURN_OK;
 
+    if (file == NULL)
+        return DLT_RETURN_WRONG_PARAMETER;
+
     if (verbose) {
         dlt_vlog(LOG_DEBUG, "%s: Message %d:\n", __func__, file->counter_total);
     }
-
-    if (file == NULL)
-        return DLT_RETURN_WRONG_PARAMETER;
 
     /* allocate new memory for index if number of messages exceeds a multiple of DLT_COMMON_INDEX_ALLOC (e.g.: 1000) */
     if (file->counter % DLT_COMMON_INDEX_ALLOC == 0) {
@@ -1708,11 +1736,13 @@ void dlt_log_set_filename(const char *filename)
     logging_filename[NAME_MAX] = 0;
 }
 
-void dlt_log_set_fifo_basedir(const char *env_pipe_dir)
+#ifndef DLT_USE_UNIX_SOCKET_IPC
+void dlt_log_set_fifo_basedir(const char *pipe_dir)
 {
-    strncpy(dltFifoBaseDir, env_pipe_dir, DLT_PATH_MAX);
+    strncpy(dltFifoBaseDir, pipe_dir, DLT_PATH_MAX);
     dltFifoBaseDir[DLT_PATH_MAX - 1] = 0;
 }
+#endif
 
 #ifdef DLT_SHM_ENABLE
 void dlt_log_set_shm_name(const char * env_shm_name)
@@ -1736,7 +1766,7 @@ void dlt_log_init(int mode)
         logging_handle = fopen(logging_filename, "a");
 
         if (logging_handle == NULL) {
-            printf("Internal log file %s cannot be opened!\n", logging_filename);
+            dlt_user_printf("Internal log file %s cannot be opened!\n", logging_filename);
             return;
         }
     }
@@ -1746,6 +1776,29 @@ void dlt_log_free(void)
 {
     if (logging_mode == DLT_LOG_TO_FILE)
         fclose(logging_handle);
+}
+
+int dlt_user_printf(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+
+    int ret = 0;
+    switch (logging_mode) {
+        case DLT_LOG_TO_CONSOLE:
+        case DLT_LOG_TO_SYSLOG:
+        case DLT_LOG_TO_FILE:
+        case DLT_LOG_DROPPED:
+        default:
+            ret = vfprintf(stdout, format, args);
+            break;
+        case DLT_LOG_TO_STDERR:
+            ret = vfprintf(stderr, format, args);
+            break;
+    }
+    va_end(args);
+
+    return ret;
 }
 
 DltReturnValue dlt_log(int prio, char *s)
@@ -1771,13 +1824,22 @@ DltReturnValue dlt_log(int prio, char *s)
     switch (logging_mode) {
     case DLT_LOG_TO_CONSOLE:
         /* log to stdout */
-        printf(sFormatString,
+        fprintf(stdout, sFormatString,
                (unsigned int)sTimeSpec.tv_sec,
                (unsigned int)(sTimeSpec.tv_nsec / 1000),
                getpid(),
                asSeverity[prio],
                s);
         fflush(stdout);
+        break;
+    case DLT_LOG_TO_STDERR:
+        /* log to stderr */
+        fprintf(stderr, sFormatString,
+               (unsigned int)sTimeSpec.tv_sec,
+               (unsigned int)(sTimeSpec.tv_nsec / 1000),
+               getpid(),
+               asSeverity[prio],
+               s);
         break;
     case DLT_LOG_TO_SYSLOG:
         /* log to syslog */
@@ -1959,6 +2021,8 @@ DltReturnValue dlt_receiver_free_unix_socket(DltReceiver *receiver)
 
 int dlt_receiver_receive(DltReceiver *receiver, DltReceiverType from_src)
 {
+    socklen_t addrlen;
+
     if (receiver == NULL)
         return -1;
 
@@ -1980,11 +2044,22 @@ int dlt_receiver_receive(DltReceiver *receiver, DltReceiverType from_src)
                                    receiver->buf + receiver->lastBytesRcvd,
                                    receiver->buffersize - receiver->lastBytesRcvd,
                                    0);
-    else
+    else if (from_src == DLT_RECEIVE_FD)
         /* wait for data from fd */
         receiver->bytesRcvd = read(receiver->fd,
                                    receiver->buf + receiver->lastBytesRcvd,
                                    receiver->buffersize - receiver->lastBytesRcvd);
+
+    else {
+        /* wait for data from UDP socket */
+        addrlen = sizeof(receiver->addr);
+        receiver->bytesRcvd = recvfrom(receiver->fd,
+                                       receiver->buf + receiver->lastBytesRcvd,
+                                       receiver->buffersize - receiver->lastBytesRcvd,
+                                       0,
+                                       (struct sockaddr *)&(receiver->addr),
+                                       &addrlen);
+    }
 
     if (receiver->bytesRcvd <= 0) {
         receiver->bytesRcvd = 0;
@@ -2046,7 +2121,7 @@ int dlt_receiver_check_and_get(DltReceiver *receiver,
                                unsigned int flags)
 {
     unsigned int min_size = to_get;
-    void *src = NULL;
+    uint8_t *src = NULL;
 
     if (flags & DLT_RCV_SKIP_HEADER)
         min_size += sizeof(DltUserHeader);
@@ -2057,7 +2132,7 @@ int dlt_receiver_check_and_get(DltReceiver *receiver,
         !dest)
         return DLT_RETURN_WRONG_PARAMETER;
 
-    src = (void *)receiver->buf;
+    src = (uint8_t *)receiver->buf;
 
     if (flags & DLT_RCV_SKIP_HEADER)
         src += sizeof(DltUserHeader);
@@ -3024,6 +3099,9 @@ void dlt_get_version(char *buf, size_t size)
         return;
     }
 
+/* Clang does not like these macros, because they are not reproducable */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdate-time"
     snprintf(buf,
              size,
              "DLT Package Version: %s %s, Package Revision: %s, build on %s %s\n%s %s %s %s\n",
@@ -3036,6 +3114,7 @@ void dlt_get_version(char *buf, size_t size)
              _DLT_SYSTEMD_WATCHDOG_ENABLE,
              _DLT_TEST_ENABLE,
              _DLT_SHM_ENABLE);
+#pragma GCC diagnostic pop
 }
 
 void dlt_get_major_version(char *buf, size_t size)
@@ -3084,7 +3163,7 @@ DltReturnValue dlt_message_print_header(DltMessage *message, char *text, uint32_
         return DLT_RETURN_WRONG_PARAMETER;
 
     dlt_message_header(message, text, size, verbose);
-    printf("%s\n", text);
+    dlt_user_printf("%s\n", text);
 
     return DLT_RETURN_OK;
 }
@@ -3095,9 +3174,9 @@ DltReturnValue dlt_message_print_hex(DltMessage *message, char *text, uint32_t s
         return DLT_RETURN_WRONG_PARAMETER;
 
     dlt_message_header(message, text, size, verbose);
-    printf("%s ", text);
+    dlt_user_printf("%s ", text);
     dlt_message_payload(message, text, size, DLT_OUTPUT_HEX, verbose);
-    printf("[%s]\n", text);
+    dlt_user_printf("[%s]\n", text);
 
     return DLT_RETURN_OK;
 }
@@ -3108,9 +3187,9 @@ DltReturnValue dlt_message_print_ascii(DltMessage *message, char *text, uint32_t
         return DLT_RETURN_WRONG_PARAMETER;
 
     dlt_message_header(message, text, size, verbose);
-    printf("%s ", text);
+    dlt_user_printf("%s ", text);
     dlt_message_payload(message, text, size, DLT_OUTPUT_ASCII, verbose);
-    printf("[%s]\n", text);
+    dlt_user_printf("[%s]\n", text);
 
     return DLT_RETURN_OK;
 }
@@ -3121,9 +3200,9 @@ DltReturnValue dlt_message_print_mixed_plain(DltMessage *message, char *text, ui
         return DLT_RETURN_WRONG_PARAMETER;
 
     dlt_message_header(message, text, size, verbose);
-    printf("%s \n", text);
+    dlt_user_printf("%s \n", text);
     dlt_message_payload(message, text, size, DLT_OUTPUT_MIXED_FOR_PLAIN, verbose);
-    printf("[%s]\n", text);
+    dlt_user_printf("[%s]\n", text);
 
     return DLT_RETURN_OK;
 }
@@ -3134,9 +3213,9 @@ DltReturnValue dlt_message_print_mixed_html(DltMessage *message, char *text, uin
         return DLT_RETURN_WRONG_PARAMETER;
 
     dlt_message_header(message, text, size, verbose);
-    printf("%s \n", text);
+    dlt_user_printf("%s \n", text);
     dlt_message_payload(message, text, size, DLT_OUTPUT_MIXED_FOR_HTML, verbose);
-    printf("[%s]\n", text);
+    dlt_user_printf("[%s]\n", text);
 
     return DLT_RETURN_OK;
 }
@@ -3506,7 +3585,7 @@ DltReturnValue dlt_message_argument_print(DltMessage *msg,
     #if defined (__WIN32__) && !defined(_MSC_VER)
                 snprintf(text, textlength, "%I64u", value64u);
     #else
-                snprintf(text, textlength, "%" PRId64, value64u);
+                snprintf(text, textlength, "%" PRIu64, value64u);
     #endif
             }
 
@@ -3741,10 +3820,14 @@ void dlt_check_envvar()
             dlt_log_init(mode);
     }
 
+#ifndef DLT_USE_UNIX_SOCKET_IPC
     char *env_pipe_dir = getenv("DLT_PIPE_DIR");
 
     if (env_pipe_dir != NULL)
         dlt_log_set_fifo_basedir(env_pipe_dir);
+    else
+        dlt_log_set_fifo_basedir(DLT_USER_IPC_PATH);
+#endif
 
 #ifdef DLT_SHM_ENABLE
     char* env_shm_name = getenv("DLT_SHM_NAME");
@@ -3768,7 +3851,7 @@ int dlt_set_loginfo_parse_service_id(char *resp_text,
 
     /* ascii type, syntax is 'get_log_info, ..' */
     /* check target id */
-    strncpy(get_log_info_tag, "get_log_info", strlen("get_log_info"));
+    strncpy(get_log_info_tag, "get_log_info", strlen("get_log_info") + 1);
     ret = memcmp((void *)resp_text, (void *)get_log_info_tag, sizeof(get_log_info_tag) - 1);
 
     if (ret == 0) {
@@ -3931,3 +4014,72 @@ int dlt_mkdir_recursive(const char *dir)
     return ret;
 }
 #endif
+
+DltReturnValue dlt_file_quick_parsing(DltFile *file, const char *filename,
+                                    int type, int verbose)
+{
+    PRINT_FUNCTION_VERBOSE(verbose);
+    int ret = DLT_RETURN_OK;
+    char text[DLT_CONVERT_TEXTBUFSIZE] = { 0 };
+
+    if (file == NULL || filename == NULL)
+        return DLT_RETURN_WRONG_PARAMETER;
+
+    FILE *output = fopen(filename, "w+");
+    if (output == NULL) {
+        dlt_vlog(LOG_ERR, "Cannot open output file %s for parsing\n", filename);
+        return DLT_RETURN_ERROR;
+    }
+
+    while(ret >= DLT_RETURN_OK && file->file_position < file->file_length) {
+        /* get file position at start of DLT message */
+        if (verbose) {
+            dlt_vlog(LOG_DEBUG, "Position in file: %ld\n", file->file_position);
+        }
+
+        /* read all header and payload */
+        ret = dlt_file_read_header(file, verbose);
+        if (ret < DLT_RETURN_OK)
+            break;
+
+        ret = dlt_file_read_header_extended(file, verbose);
+        if (ret < DLT_RETURN_OK)
+            break;
+
+        ret = dlt_file_read_data(file, verbose);
+        if (ret < DLT_RETURN_OK)
+            break;
+
+        if (file->filter) {
+            /* check the filters if message is used */
+            ret = dlt_message_filter_check(&(file->msg), file->filter, verbose);
+            if (ret != DLT_RETURN_TRUE)
+                continue;
+        }
+
+        ret = dlt_message_header(&(file->msg), text,
+                DLT_CONVERT_TEXTBUFSIZE, verbose);
+        if (ret < DLT_RETURN_OK)
+            break;
+
+        fprintf(output, "%s", text);
+
+        ret = dlt_message_payload(&(file->msg), text,
+                DLT_CONVERT_TEXTBUFSIZE, type, verbose);
+        if (ret < DLT_RETURN_OK)
+            break;
+
+        fprintf(output, "[%s]\n", text);
+
+        /* store index pointer to message position in DLT file */
+        file->counter++;
+        file->position = file->counter_total - 1;
+        /* increase total message counter */
+        file->counter_total++;
+        /* store position to next message */
+        file->file_position = ftell(file->handle);
+    } // while()
+
+    fclose(output);
+    return ret;
+}
